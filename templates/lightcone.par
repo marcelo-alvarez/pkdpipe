@@ -1,0 +1,62 @@
+from accuracy import classic_theta_switch,classic_replicas_switch
+
+achOutName      = "${outdir}/${jobname}"
+achTfFile       = "${jobdir}/euclid_z0_transfer_combined.dat"
+
+# Lightcone
+# ---------
+bLightCone          = 1        # output lightcone
+bLightConeParticles = 1        # output particle positions
+dRedshiftLCP        = ${zmax}     # start redshift
+nSideHealpix       = 1024      # nside of the Healpix maps
+sqdegLCP           = -1        # full sky
+hLCP               = [1, 0, 0] # lightcone direction vector 
+
+# Initial Condition
+dBoxSize        = ${lbox}      # Mpc/h
+nGrid           = ${ngrid}      # Simulation has nGrid^3 particles
+iLPT            = 2         # LPT order for IC
+iSeed           = 314159265 # Random seed
+dRedFrom        = 12        # Starting redshift
+bWriteIC        = False     # Write ICs
+
+# Cosmology
+h               = 0.67
+dOmega0         = 0.32
+dLambda         = 0.68
+dSigma8         = 0.83
+dSpectral       = 0.96
+
+iStartStep      = 0
+nSteps          = 100
+dRedTo          = 0.0
+
+# Cosmological Simulation
+bComove         = True          # Use comoving coordinates
+bPeriodic       = True          # with a periodic box
+bEwald          = True          # enable Ewald periodic boundaries
+
+# Logging/Output
+iOutInterval    = 0 # Do not dump snapshots
+iCheckInterval = 0 # checkpoints
+bDoDensity      = False
+bVDetails       = True
+
+bOverwrite      = True
+bParaRead       = True          # Read in parallel
+bParaWrite      = True         # Write in parallel (does not work on all file systems)
+#nParaRead      = 8             # Limit number of simultaneous readers to this
+#nParaWrite     = 8             # Limit number of simultaneous writers to this
+
+# Accuracy Parameters
+bEpsAccStep     = True          # Choose eps/a timestep criteria
+dTheta          = classic_theta_switch()        # 0.40, 0.55, 0.70 switch
+nReplicas       = classic_replicas_switch()     # 1 if theta > 0.52 otherwise 2
+
+# Memory and performance
+bMemUnordered   = True          # iOrder replaced by potential and group id
+bNewKDK         = True          # No accelerations in the particle, dual tree possible
+
+# Halo finding
+bFindGroups    = True           # enable friends-of-friends group finder
+dTau           = 0.2 / nGrid    # linking length; normally set to 0.2 x mean particle separation.
