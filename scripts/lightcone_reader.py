@@ -74,10 +74,6 @@ def lightcone_reader(param_file, bounds, nproc):
     namespace = re.search(r'(?<=achOutName)\s*=\s*["\'].+["\']', content)[0].split("=")[-1].strip().replace('"', '').replace("'", "")
     print(f"achOutName:   ", namespace, flush=True)
 
-    lcfile = f"{namespace}.lcp"
-    if os.path.exists(lcfile):
-        return lcfile
-
     nside = int(re.search(r"(?<=nSideHealpix)\s*=\s*\d+", content)[0].split("=")[-1].strip())    
     print(f"nSideHealpix: ", nside, flush=True)
     z_out = float(re.search(r"(?<=dRedshiftLCP)\s*=\s*\d+\.\d+", content)[0].split("=")[-1].strip())
