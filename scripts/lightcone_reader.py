@@ -36,22 +36,9 @@ def process_single(n_step,namespace,z_output,lcp_type,z_out,bounds):
                 # concat and truncate
                 cparts = np.concatenate(cparts)
 
-                # save the file with the correct naming scheme
-                z_0 = z_output[n_step]
-
-                # catch very small z
-                if np.abs(z_0) <= 1e-9:
-                    z_0 = 0.0
-
-                z_1 = z_output[n_step - 1]
-
-                # catch larger than output redshifts
-                if z_1 > z_out:
-                    z_1 = z_out
-
-                # break the loop
                 print(f"completed step {n_step:>4}",end='\r')
                 break
+
     if len(cparts) == 0:
         return None
     lcp_type = np.dtype([("x",'f'),("y",'f'),("z",'f'),("vx",'f'),("vy",'f'),("vz",'f')])
