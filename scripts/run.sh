@@ -12,5 +12,4 @@ module load python
 mamba activate pkdgrav
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$condalib
 module unload python
-export OMP_NUM_THREADS=128
 srun $args $exe $parfile

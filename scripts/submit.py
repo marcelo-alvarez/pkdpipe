@@ -65,7 +65,7 @@ email   = params['email']
 gpus = nodes * 4
 
 if jobname == djobname:
-    jobname = f"N{ngrid}-L{lbox}-{gpus}gpus"
+    jobname = f"N{ngrid:04d}-L{lbox}-{gpus:03d}gpus"
     
 if email == demail:
     email = os.getenv('pkdgravemail')
