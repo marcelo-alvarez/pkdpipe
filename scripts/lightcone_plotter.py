@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 import argparse
 import os.path
-from lightcone_reader import lightcone_reader
+from pkdpipe.datainterface import DataInterface
 import ast
 import sys
 
@@ -23,6 +23,9 @@ parser.add_argument('--psize', type=float,            help=f'particle size in pl
 parser.add_argument('--dpi',   type=int,              help=f'dpi of output image', default=ddpi)
 
 args = parser.parse_args()
+pkdata = DataInterface(param_file=args.param,nproc=args.nproc)
+
+boxsize = pkdata.params['boxsize']
 
 # get particles
 pfile = f"{args.cname}.npz"
@@ -32,7 +35,7 @@ if os.path.exists(pfile):
     parts = data['parts']
     boxsize = data['boxsize'][0]
 else:
-    boxsize, parts = lightcone_reader(args.param, args.bounds, args.nproc)
+    parts = pkdata.fetch_data(args.bounds,dataset='xv',filetype='lcp')
     np.savez(pfile,parts=parts,boxsize=np.asarray([boxsize]))
 
 boxsize /= 1e3 # Mpc/h --> Gpc/h
