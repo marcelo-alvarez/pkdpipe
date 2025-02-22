@@ -130,13 +130,10 @@ class DataInterface:
             bounds.append([r1,r2])
         else:
             shifts.append(np.rec.fromarrays(np.asarray([0,0,0]),names=['x','y','z']))
-        nshift=0
+
         for shift in shifts:
-            nshift += 1
             sdata = self._cull_shift_reshape(vars,cdata,shift,bounds)
             data = np.concatenate((data,sdata),axis=1)
-        if nshift < 8:
-            print(f"error nshift={nshift}")
         return data
 
     def _read_step(self,step,bbox,dprops,format):
