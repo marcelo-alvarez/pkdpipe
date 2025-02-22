@@ -10,15 +10,65 @@ import numpy.lib.recfunctions as recfc
 pkdgrav3 data interface
 """
 
+def approximate_geometry(omegam,h):
+    from scipy.interpolate import interp1d
+
+    c = 3e5
+
+    H0 = 100*h
+    nz = 10000
+    z1 = 0.0
+    z2 = 20.0
+    za = np.linspace(z1,z2,nz)
+    dz = za[1]-za[0]
+
+    H      = lambda z: H0*np.sqrt(omegam*(1+z)**3+1-omegam)
+    dchidz = lambda z: c/H(z)
+
+    chia = np.cumsum(dchidz(za))*dz*h # Mpc/h
+    chia -= chia[0]
+
+    zofchi = interp1d(chia,za)
+    chiofz = interp1d(za,chia)
+
+    return zofchi,chiofz
+
 dataproperties = {
-    'xv' : {'dtype' : ['f','f','f', 'f', 'f', 'f'], 
-            'vars'  : ['x','y','z','vx','vy','vz']}
+    'xvp' : {'dtype' : ['f4','f4','f4','f4','f4','f4'], 
+              'vars' : [ 'x', 'y', 'z','vx','vy','vz']},
+
+    'xvh' : {'dtype' : ['f4','f4','f4','f4','f4','f4',   'f4'], 
+              'vars' : [ 'x', 'y', 'z','vx','vy','vz','npart']},
 }
 
 fileformats = {
-    'lcp' : {'dtype' : [('mass','d'),("x",'f'),("y",'f'),("z",'f'),
-                        ("vx",'f'),("vy",'f'),("vz",'f'),("eps",'f'),("phi",'f')],
-             'ext'   : 'lcp'}
+    # lcp format
+    #      all - 0,...,9 (36 bytes)
+    #     mass - 0,1     (1 double)
+    #    x,y,z - 2,3,4   (3 floats)
+    # vx,vy,vz - 5,6,7   (3 floats)
+    #      eps - 8       (1 float)
+    #      phi - 9       (1 float)   
+    'lcp' : {'dtype'  : [('mass','d'),("x",'f4'),("y",'f4'),("z",'f4'),
+                        ("vx",'f4'),("vy",'f4'),("vz",'f4'),("eps",'f4'),("phi",'f4')],
+             'ext'    : 'lcp',
+             'name'   : 'lightcone',
+             'sliced' : True},
+    # fof format
+    #      all - 0,...,33 (132 bytes)
+    #    x,y,z - 0,1,2    (3 floats)
+    #      pot - 3        (1 float)
+    #     dum1 - 4-8      (12 bytes)
+    # vx,vy,vz - 7,8,9    (3 floats)
+    #     dum2 - 4-8      (84 bytes)
+    #    npart - 31       (1 int)
+    #     dum3 - 32,33    (8 bytes)
+    'fof' : {'dtype'  : [ ('x','f4'), ('y','f4'), ('z','f4'),('pot','f4'),('dum1',('f4',3)),
+                        ('vx','f4'),('vy','f4'),('vz','f4'),('dum2',('f4',21)),
+                        ('npart','f4'),('dum3',('f4',2))],
+             'ext'    : 'fofstats',
+             'name'   : 'fof',
+             'sliced' : False}
 }
 
 class DataInterface:
@@ -49,18 +99,64 @@ class DataInterface:
         self.params['zmax']      = self._parse_param_file(content,'dRedshiftLCP',float)
         self.params['boxsize']   = self._parse_param_file(content,    'dBoxSize',  int)
         self.params['nsteps']    = self._parse_param_file(content,      'nSteps',  int)
+        self.params['omegam']    = self._parse_param_file(content,     'dOmega0',float)
+        self.params['h']         = self._parse_param_file(content,           'h',float)
+
         self.params['zoutput']   = np.genfromtxt(self.params['namespace'] + ".log")[:, 1]
 
-    def _read_step(self,step,bounds,dprops,format):
+        self.zofchi, self.chiofz = approximate_geometry(self.params['omegam'],self.params['h'])
 
-        z = self.params['zoutput'][step]
+    def _cull_shift_reshape(self,vars,data,shift,bounds):
+        cdata = np.copy(data)
+        dm = np.full(np.shape(cdata)[0],True)
+        for var in ['x','y','z']:
+           cdata[var] += shift[var]
+        if 'x' in vars and 'y' in vars and 'z' in vars:
+            dm = ((cdata['x']>bounds[0][0]) & (cdata['x']<=bounds[0][1]) &
+                  (cdata['y']>bounds[1][0]) & (cdata['y']<=bounds[1][1]) &
+                  (cdata['z']>bounds[2][0]) & (cdata['z']<=bounds[2][1]))
+            if len(bounds) > 3:
+                r = np.sqrt(cdata['x']**2+cdata['y']**2+cdata['z']**2)
+                dm = (dm & (r>bounds[3][0]) & (r<=bounds[3][1]))
+        return np.concatenate([cdata[var][dm] for var in vars]).reshape((len(vars),-1))
+
+    def _cull_tile_reshape(self,data,cdata,vars,bbox,r1,r2,format):
+        shifts = []
+        bounds = bbox.copy()
+        if not format['sliced']:
+            d=np.concatenate(np.meshgrid([-0.5,0.5],[-0.5,0.5],[-0.5,0.5])).reshape(3,8)
+            for i in range(8):
+                shifts.append(np.rec.fromarrays(d[:,i],names=['x','y','z']))
+            bounds.append([r1,r2])
+        else:
+            shifts.append(np.rec.fromarrays(np.asarray([0,0,0]),names=['x','y','z']))
+        nshift=0
+        for shift in shifts:
+            nshift += 1
+            sdata = self._cull_shift_reshape(vars,cdata,shift,bounds)
+            data = np.concatenate((data,sdata),axis=1)
+        if nshift < 8:
+            print(f"error nshift={nshift}")
+        return data
+
+    def _read_step(self,step,bbox,dprops,format):
+
+        z1 = self.params['zoutput'][step]
+        z2 = self.params['zoutput'][step-1]
         vars  = dprops['vars']
         dtype = format['dtype']
         ext   = format['ext']
+
+        chi1 = self.chiofz(z1) # Mpc/h
+        chi2 = self.chiofz(z2) # Mpc/h
+
+        r1 = chi1 / self.params['boxsize'] # internal length units
+        r2 = chi2 / self.params['boxsize'] # internal length units
+
         data = np.concatenate([np.zeros(0,dtype=dptype) for dptype in dprops['dtype']]).reshape(len(vars),0)
 
         # return if redshift for this step outside of lightcone
-        if z > self.params['zmax']:
+        if z1 > self.params['zmax']:
             return data
 
         # iterate over processes with files
@@ -72,31 +168,28 @@ class DataInterface:
 
             # return if file doesn't exist
             if not os.path.exists(current_file):
-                print(f"completed step {step:>4}",end='\r')
+                #print(f"completed step {step:>4}",end='\r')
                 return data
 
             # read particles from file and add those within bounds to data 
             cdata = np.fromfile(current_file, dtype=dtype)
             if np.shape(cdata)[0] == 0:
                 continue
-            dm = np.full(np.shape(cdata)[0],True)
 
-            if 'x' in vars and 'y' in vars and 'z' in vars:
-                dm = ((cdata['x']>bounds[0][0]) & (cdata['x']<bounds[0][1]) &
-                    (cdata['y']>bounds[1][0]) & (cdata['y']<bounds[1][1]) &
-                    (cdata['z']>bounds[2][0]) & (cdata['z']<bounds[2][1]))
-            cdata = np.concatenate([cdata[var][dm] for var in vars]).reshape((len(vars),-1))
-            data = np.concatenate((data,cdata),axis=1)
+            data = self._cull_tile_reshape(data,cdata,vars,bbox,r1,r2,format)
 
-    def fetch_data(self,bounds,dataset='xv',filetype='lcp'):
+            #data = np.concatenate((data,cdata),axis=1)
+
+    def fetch_data(self,bbox,dataset='xv',filetype='lcp'):
 
         dprops = dataproperties[dataset]
         format = fileformats[filetype]
         vars   = dprops['vars']
-        args = [[step,bounds,dprops,format] for step in range(1, self.params['nsteps'] + 1)]
+        print("fetching data")
 
-        print()
-
-        return np.rec.fromarrays(np.concatenate(mp.Pool(processes=self.nproc).starmap(self._read_step,args),axis=1).reshape((len(vars),-1)),
+        args = [[step,bbox,dprops,format] for step in range(1, self.params['nsteps'] + 1)]
+        data = np.rec.fromarrays(np.concatenate(mp.Pool(processes=self.nproc).starmap(self._read_step,args),axis=1).reshape((len(vars),-1)),
                                   names=vars)
 
+        print("\ndata fetched")
+        return data
