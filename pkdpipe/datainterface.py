@@ -37,7 +37,7 @@ dataproperties = {
     'xvp' : {'dtype' : ['f4','f4','f4','f4','f4','f4'], 
               'vars' : [ 'x', 'y', 'z','vx','vy','vz']},
 
-    'xvh' : {'dtype' : ['f4','f4','f4','f4','f4','f4',   'f4'], 
+    'xvh' : {'dtype' : ['f4','f4','f4','f4','f4','f4',   'i4'], 
               'vars' : [ 'x', 'y', 'z','vx','vy','vz','npart']},
 }
 
@@ -53,7 +53,8 @@ fileformats = {
                         ("vx",'f4'),("vy",'f4'),("vz",'f4'),("eps",'f4'),("phi",'f4')],
              'ext'    : 'lcp',
              'name'   : 'lightcone',
-             'sliced' : True},
+             'sliced' : True,
+             'offset' : [0,0,0]},
     # fof format
     #      all - 0,...,33 (132 bytes)
     #    x,y,z - 0,1,2    (3 floats)
@@ -65,10 +66,11 @@ fileformats = {
     #     dum3 - 32,33    (8 bytes)
     'fof' : {'dtype'  : [ ('x','f4'), ('y','f4'), ('z','f4'),('pot','f4'),('dum1',('f4',3)),
                         ('vx','f4'),('vy','f4'),('vz','f4'),('dum2',('f4',21)),
-                        ('npart','f4'),('dum3',('f4',2))],
+                        ('npart','i4'),('dum3',('f4',2))],
              'ext'    : 'fofstats',
              'name'   : 'fof',
-             'sliced' : False}
+             'sliced' : False,
+             'offset' : [-0.5,-0.5,-0.5]}
 }
 
 class DataInterface:
@@ -101,6 +103,7 @@ class DataInterface:
         self.params['nsteps']    = self._parse_param_file(content,      'nSteps',  int)
         self.params['omegam']    = self._parse_param_file(content,     'dOmega0',float)
         self.params['h']         = self._parse_param_file(content,           'h',float)
+        self.params['ngrid']     = self._parse_param_file(content,       'nGrid',  int)
 
         self.params['zoutput']   = np.genfromtxt(self.params['namespace'] + ".log")[:, 1]
 
@@ -120,26 +123,27 @@ class DataInterface:
                 dm = (dm & (r>bounds[3][0]) & (r<=bounds[3][1]))
         return np.concatenate([cdata[var][dm] for var in vars]).reshape((len(vars),-1))
 
-    def _cull_tile_reshape(self,data,cdata,vars,bbox,r1,r2,format):
+    def _cull_tile_reshape(self,data,cdata,vars,bbox,r1,r2,format,lightcone):
         shifts = []
         bounds = bbox.copy()
-        if not format['sliced']:
+        if not format['sliced'] and lightcone:
             d=np.concatenate(np.meshgrid([-0.5,0.5],[-0.5,0.5],[-0.5,0.5])).reshape(3,8)
             for i in range(8):
                 shifts.append(np.rec.fromarrays(d[:,i],names=['x','y','z']))
             bounds.append([r1,r2])
         else:
-            shifts.append(np.rec.fromarrays(np.asarray([0,0,0]),names=['x','y','z']))
+            shifts.append(np.rec.fromarrays(-np.asarray(format['offset']),names=['x','y','z']))
 
         for shift in shifts:
             sdata = self._cull_shift_reshape(vars,cdata,shift,bounds)
             data = np.concatenate((data,sdata),axis=1)
         return data
 
-    def _read_step(self,step,bbox,dprops,format):
+    def _read_step(self,step,bbox,dprops,format,lightcone,redshift):
 
-        z1 = self.params['zoutput'][step]
-        z2 = self.params['zoutput'][step-1]
+        zvals = self.params['zoutput']
+        z1 = zvals[step]
+        z2 = zvals[step-1]
         vars  = dprops['vars']
         dtype = format['dtype']
         ext   = format['ext']
@@ -152,9 +156,13 @@ class DataInterface:
 
         data = np.concatenate([np.zeros(0,dtype=dptype) for dptype in dprops['dtype']]).reshape(len(vars),0)
 
-        # return if redshift for this step outside of lightcone
-        if z1 > self.params['zmax']:
-            return data
+        # return if redshift for this step outside of z1,z2 for lightcone, or not the step nearest to z otherwise
+        if lightcone:
+            if z1 > self.params['zmax']:
+                return data
+        else:
+            if step != np.argmin(np.abs(redshift - zvals)):
+                return data
 
         # iterate over processes with files
         current_proc = 0
@@ -165,7 +173,7 @@ class DataInterface:
 
             # return if file doesn't exist
             if not os.path.exists(current_file):
-                #print(f"completed step {step:>4}",end='\r')
+                print(f"read step {step:>4}",end='\r')
                 return data
 
             # read particles from file and add those within bounds to data 
@@ -173,20 +181,29 @@ class DataInterface:
             if np.shape(cdata)[0] == 0:
                 continue
 
-            data = self._cull_tile_reshape(data,cdata,vars,bbox,r1,r2,format)
+            data = self._cull_tile_reshape(data,cdata,vars,bbox,r1,r2,format,lightcone)
 
-            #data = np.concatenate((data,cdata),axis=1)
-
-    def fetch_data(self,bbox,dataset='xv',filetype='lcp'):
+    def fetch_data(self,bbox,dataset='xv',filetype='lcp',lightcone=True,redshifts=[0]):
 
         dprops = dataproperties[dataset]
         format = fileformats[filetype]
         vars   = dprops['vars']
         print("fetching data")
 
-        args = [[step,bbox,dprops,format] for step in range(1, self.params['nsteps'] + 1)]
-        data = np.rec.fromarrays(np.concatenate(mp.Pool(processes=self.nproc).starmap(self._read_step,args),axis=1).reshape((len(vars),-1)),
-                                  names=vars)
-
+        if lightcone:
+            args = [[step,bbox,dprops,format,lightcone,0] for step in range(1, self.params['nsteps'] + 1)]
+            data = np.asarray([np.rec.fromarrays(np.concatenate(mp.Pool(processes=self.nproc).starmap(self._read_step,args),axis=1).reshape((len(vars),-1)),
+                                      names=vars)])
+        else:
+            data = {}
+            zout = []
+            i = 0
+            for redshift in redshifts:
+                step = np.argmin(np.abs(redshift - self.params['zoutput']))
+                data[f"box{i}"] = (np.rec.fromarrays(self._read_step(step,bbox,dprops,format,lightcone,redshift).reshape(len(vars),-1),names=vars))
+                zout.append(self.params['zoutput'][step])
+                i+=1
+            self.zout = np.asarray(zout)
+            self.nout = i
         print("\ndata fetched")
         return data
