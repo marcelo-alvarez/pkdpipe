@@ -6,7 +6,7 @@ import os
 import shutil
 from string import Template
 
-dpath    = f"{os.getenv('SCRATCH')}/pkdgrav3/scaling-tests"
+dpath    = f"{os.getenv('SCRATCH')}/pkdgrav3/runs"
 djobname = "N{ngrid}-L{lbox}-{nodes*4}gpus"
 demail   = "${pkdgravemail}"
 
@@ -28,7 +28,8 @@ cparams = {
     'rundir' : {'val' :      dpath, 'type' :   str, 'desc' : 'path for runs'},
     'jobname': {'val' :   djobname, 'type' :   str, 'desc' : 'directory name for run'},
     'email'  : {'val' :     demail, 'type' :   str, 'desc' : 'email for slurm notifications'},
-    'tlimit' : {'val' : '48:00:00', 'type' :   str, 'desc' : 'time limit'}}
+    'tlimit' : {'val' : '48:00:00', 'type' :   str, 'desc' : 'time limit'},
+    'dryrun' : {'val' :          0, 'type' :   int, 'desc' : 'set >0 to only create dir / files but no sbatch'}}
 
 def copytemplate(templatefile,outfile,data):
     with open(templatefile, "r") as file:
@@ -61,6 +62,7 @@ rundir  = params['rundir']
 jobname = params['jobname']
 tlimit  = params['tlimit']
 email   = params['email']
+dryrun  = params['dryrun']
 
 gpus = nodes * 4
 
@@ -107,23 +109,5 @@ copytemplate(slurmtemp,slurmfile,{
             "parfile"   : parfile
     })
 
-subprocess.call(f"sbatch {slurmfile}", shell=True)
-
-# cat $templtdir/lightcone.par | sed -e "s,_NGRID_REPLACE_,$ngrid,g" \
-#                              | sed -e "s,_LBOX_REPLACE_,$lbox,g" \
-#                              | sed -e "s,_ZMAX_REPLACE_,$zmax,g" \
-#                              | sed -e "s,_JOBNAME_REPLACE_,$jobname,g" > $parfile
-
-# cd $jobdir
-# if [ $int -eq 0 ] ; then
-#     cat $templtdir/pkdgrav.sh | sed -e "s,_RUNSCRIPT_REPLACE_,$runscript,g" \
-#                               | sed -e "s,_NODES_REPLACE_,$nodes,g" \
-#                               | sed -e "s,_TLIMIT_REPLACE_,$tlimit,g" \
-#                               | sed -e "s,_JOBNAME_REPLACE_,$jobname,g" \
-#                               | sed -e "s,_PARFILE_REPLACE_,$parfile,g" > pkdgrav.sh
-#     jobid=$(sbatch pkdgrav.sh | awk '{print $4}')
-#     echo "submitted $jobid to queue"
-#     cp pkdgrav.sh pkdgrav-$jobid.sh
-# else
-#     source $runscript $nodes $parfile interactive | tee log-$jobname
-# fi
+if dryrun == 0:
+    subprocess.call(f"sbatch {slurmfile}", shell=True)
