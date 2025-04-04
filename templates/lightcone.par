@@ -3,8 +3,12 @@ from accuracy import classic_theta_switch,classic_replicas_switch
 achOutName      = "${outdir}/${jobname}"
 achTfFile       = "${jobdir}/euclid_z0_transfer_combined.dat"
 
+# Efficiency tuning
+nGroup              = 1024
+nBucket             = 16
+bMemIntegerPosition = True
+
 # Lightcone
-# ---------
 bLightCone          = 1        # output lightcone
 bLightConeParticles = 1        # output particle positions
 dRedshiftLCP        = ${zmax}     # start redshift
