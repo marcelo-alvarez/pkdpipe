@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pkdpipe"
+dynamic = ["version"]
+description = "pkdgrav3 analysis pipeline"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Marcelo Alvarez" },
+]
+dependencies = [
+    "numpy",
+]
+
+[tool.setuptools]
+packages = ["pkdpipe"]
+
+[project.urls]
+Homepage = "http://github.com/marcelo-alvarez/pkdpipe"
+
