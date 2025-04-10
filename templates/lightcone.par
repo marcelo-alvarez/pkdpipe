@@ -1,7 +1,29 @@
 from accuracy import classic_theta_switch,classic_replicas_switch
 
-achOutName      = "${outdir}/${jobname}"
-achTfFile       = "${transfer}"
+achOutName      = "${achOutName}"
+achTfFile       = "${achTfFile}"
+
+# Lightcone
+dRedshiftLCP    = ${dRedshiftLCP} # outer lightcone redshift
+
+# Initial Condition
+dBoxSize        = ${dBoxSize} # Mpc/h
+nGrid           = ${ngrid} # Simulation has nGrid^3 particles
+iLPT            = ${iLPT}    # LPT order for IC
+dRedFrom        = ${dRedFrom}   # Starting redshift
+
+# Cosmology
+h               = ${h}
+dOmega0         = ${dOmega0}
+dLambda         = ${dLambda}
+dSigma8         = ${dSigma8}
+dSpectral       = ${dSpectral}
+
+# Snapshot I/O
+nSteps          = ${nSteps}
+dRedTo          = ${dRedTo}
+
+# ------------------ Hardcoded parameters ------------------
 
 # Efficiency tuning
 nGroup              = 1024
@@ -11,29 +33,16 @@ bMemIntegerPosition = True
 # Lightcone
 bLightCone          = 1        # output lightcone
 bLightConeParticles = 1        # output particle positions
-dRedshiftLCP        = ${zmax}     # start redshift
 nSideHealpix       = 1024      # nside of the Healpix maps
 sqdegLCP           = -1        # full sky
 hLCP               = [1, 0, 0] # lightcone direction vector 
 
 # Initial Condition
-dBoxSize        = ${lbox}      # Mpc/h
-nGrid           = ${ngrid}      # Simulation has nGrid^3 particles
-iLPT            = 2         # LPT order for IC
-iSeed           = 314159265 # Random seed
-dRedFrom        = 12        # Starting redshift
 bWriteIC        = False     # Write ICs
+iSeed           = 314159265 # Random seed
 
-# Cosmology
-h               = ${h}
-dOmega0         = ${omegam}
-dLambda         = ${omegal}
-dSigma8         = ${sigma8}
-dSpectral       = ${ns}
-
+# Time stepping
 iStartStep      = 0
-nSteps          = ${nSteps}
-dRedTo          = ${dRedTo}
 
 # Cosmological Simulation
 bComove         = True          # Use comoving coordinates
@@ -47,15 +56,13 @@ bDoDensity      = False
 bVDetails       = True
 
 bOverwrite      = True
-bParaRead       = True          # Read in parallel
+bParaRead       = True         # Read in parallel
 bParaWrite      = True         # Write in parallel (does not work on all file systems)
-#nParaRead      = 8             # Limit number of simultaneous readers to this
-#nParaWrite     = 8             # Limit number of simultaneous writers to this
 
 # Accuracy Parameters
-bEpsAccStep     = True          # Choose eps/a timestep criteria
-dTheta          = classic_theta_switch()        # 0.40, 0.55, 0.70 switch
-nReplicas       = classic_replicas_switch()     # 1 if theta > 0.52 otherwise 2
+bEpsAccStep     = True                      # Choose eps/a timestep criteria
+dTheta          = classic_theta_switch()    # 0.40, 0.55, 0.70 switch
+nReplicas       = classic_replicas_switch() # 1 if theta > 0.52 otherwise 2
 
 # Memory and performance
 bMemUnordered   = True          # iOrder replaced by potential and group id
