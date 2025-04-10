@@ -1,7 +1,7 @@
 from accuracy import classic_theta_switch,classic_replicas_switch
 
 achOutName      = "${outdir}/${jobname}"
-achTfFile       = "${jobdir}/euclid_z0_transfer_combined.dat"
+achTfFile       = "${transfer}"
 
 # Efficiency tuning
 nGroup              = 1024
@@ -25,15 +25,15 @@ dRedFrom        = 12        # Starting redshift
 bWriteIC        = False     # Write ICs
 
 # Cosmology
-h               = 0.67
-dOmega0         = 0.32
-dLambda         = 0.68
-dSigma8         = 0.83
-dSpectral       = 0.96
+h               = ${h}
+dOmega0         = ${omegam}
+dLambda         = ${omegal}
+dSigma8         = ${sigma8}
+dSpectral       = ${ns}
 
 iStartStep      = 0
-nSteps          = 100
-dRedTo          = 0.0
+nSteps          = ${nSteps}
+dRedTo          = ${dRedTo}
 
 # Cosmological Simulation
 bComove         = True          # Use comoving coordinates
