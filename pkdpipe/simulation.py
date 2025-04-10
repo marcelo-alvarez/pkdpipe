@@ -12,7 +12,7 @@ from pkdpipe.cli import parsecommandline
 pkdpipe simulation
 """
 
-djobname = "N{ngrid}-L{lbox}-{nodes*4}gpus"
+djobname = "N{ngrid}-L{dBoxSize}-{nodes*4}gpus"
 demail   = "${pkdgravemail}"
 dsimname = "lcone-small"
 
@@ -44,31 +44,39 @@ def get_simulation(simname):
     ddRedTo = f'{[f'{z:0.4f}' for z in redshiftlist]}'.replace("'", "")
     dnSteps = f'{[f'{i}' for i in range(len(redshiftlist))]}'.replace("'", "")
 
-    params = {
-        'ngrid'  : {'val' :       1400, 'type' :   int, 'desc' : 'cube root particle number'},
-        'lbox'   : {'val' :       1050, 'type' : float, 'desc' : 'boxsize [Mpc/h]'},
-        'nodes'  : {'val' :          2, 'type' :   int, 'desc' : 'number of nodes'},
-        'gpuper' : {'val' :          4, 'type' :   int, 'desc' : 'GPUs per node'},
-        'rundir' : {'val' :      dpath, 'type' :   str, 'desc' : 'path for runs'},
-        'jobname': {'val' :   djobname, 'type' :   str, 'desc' : 'directory name for run'},
-        'simname': {'val' :   dsimname, 'type' :   str, 'desc' : 'simulation parameter set name'},
-        'email'  : {'val' :     demail, 'type' :   str, 'desc' : 'email for slurm notifications'},
-        'tlimit' : {'val' : '48:00:00', 'type' :   str, 'desc' : 'time limit'},
-        'cosmo'  : {'val' :     dcosmo, 'type' :   str, 'desc' : 'cosmology'},
-        'dRedTo' : {'val' :    ddRedTo, 'type' :   str, 'desc' : 'output redshifts'},
-        'nSteps' : {'val' :    dnSteps, 'type' :   str, 'desc' : 'output steps'},
-        'sbatch' : {'val' :      False, 'type' :  bool, 'desc' : 'submit with sbatch; otherwise only create dir & files'}}
+    pkp_params = {
+        'sbatch'  : {'val' :      False, 'type' :  bool, 'desc' : 'submit with sbatch; otherwise only create dir & files'},
+        'simname' : {'val' :   dsimname, 'type' :   str, 'desc' : 'simulation parameter set name'},
+        'cosmo'   : {'val' :     dcosmo, 'type' :   str, 'desc' : 'cosmology'}
+    }
+    job_params = {
+        'nodes'   : {'val' :          2, 'type' :   int, 'desc' : 'number of nodes'},
+        'gpuper'  : {'val' :          4, 'type' :   int, 'desc' : 'GPUs per node'},
+        'rundir'  : {'val' :      dpath, 'type' :   str, 'desc' : 'path for runs'},
+        'jobname' : {'val' :   djobname, 'type' :   str, 'desc' : 'directory name for run'},
+        'email'   : {'val' :     demail, 'type' :   str, 'desc' : 'email for slurm notifications'},
+        'tlimit'  : {'val' : '48:00:00', 'type' :   str, 'desc' : 'time limit'}
+    }
+    pkd_params = {
+        'nGrid'   : {'val' :       1400, 'type' :   int, 'desc' : 'cube root particle number'},
+        'dBoxSize': {'val' :       1050, 'type' : float, 'desc' : 'boxsize [Mpc/h]'},
+        'dRedFrom': {'val' :         12, 'type' : float, 'desc' : 'starting redshift'},
+        'iLPT'    : {'val' :          3, 'type' :   int, 'desc' : 'LPT order for ICs'},
+        'dRedTo'  : {'val' :    ddRedTo, 'type' :   str, 'desc' : 'output redshifts'},
+        'nSteps'  : {'val' :    dnSteps, 'type' :   str, 'desc' : 'output steps'}
+    }
+    params = pkp_params | job_params | pkd_params
 
     # only lightcone tests are implemented so far
     if simname == 'lcone-medium':
         pass
     elif simname == 'lcone-small':
-        params['lbox']['val']  = 525
-        params['ngrid']['val'] = 700
+        params['dBoxSize']['val']  = 525
+        params['nGrid']['val'] = 700
         params['nodes']['val'] = 1
     elif simname == 'lcone-large':
-        params['lbox']['val']  = 2100
-        params['ngrid']['val'] = 2800
+        params['dBoxSize']['val']  = 2100
+        params['nGrid']['val'] = 2800
         params['nodes']['val'] = 16
     return params
 
@@ -99,19 +107,19 @@ class Simulation:
 
     def submit(self):
 
-        ngrid   = self.params['ngrid']
-        lbox    = self.params['lbox']
-        nodes   = self.params['nodes']
-        rundir  = self.params['rundir']
-        jobname = self.params['jobname']
-        tlimit  = self.params['tlimit']
-        email   = self.params['email']
-        sbatch  = self.params['sbatch']
+        nGrid    = self.params['nGrid']
+        dBoxSize = self.params['dBoxSize']
+        nodes    = self.params['nodes']
+        rundir   = self.params['rundir']
+        jobname  = self.params['jobname']
+        tlimit   = self.params['tlimit']
+        email    = self.params['email']
+        sbatch   = self.params['sbatch']
 
         gpus = nodes * self.params['gpuper']
 
         if jobname == djobname:
-            jobname = f"N{ngrid:04d}-L{lbox}-{gpus:03d}gpus"
+            jobname = f"N{ngrid:04d}-L{dBoxSize}-{gpus:03d}gpus"
             
         if email == demail:
             email = os.getenv('pkdgravemail')
@@ -119,7 +127,7 @@ class Simulation:
         jobdir  = f"{rundir}/{jobname}"
         outdir  = f"{jobdir}/output"
 
-        transfer  = f"{jobdir}/{jobname}-transfer.dat"
+        achTfFile = f"{jobdir}/{jobname}-transfer.dat"
 
         if os.path.isdir(jobdir):
             response = input(f"{jobdir} already exists; enter REMOVE if you want to delete it\n")
@@ -147,28 +155,29 @@ class Simulation:
         cosmo  = Cosmology(cosmology='desi-dr2-planck-act-mnufree')
 
         # get maximum redshift
-        zmax = f"{cosmo.chi2z(lbox/cosmo.params['h'])+0.01:0.2f}"
+        dRedshiftLCP = f"{cosmo.chi2z(dBoxSize/cosmo.params['h'])+0.01:0.2f}"
 
         # write transfer file
-        cosmo.writetransfer(transfer)
+        cosmo.writetransfer(achTfFile)
 
         # parameter file
         parfile = f"{jobdir}/{jobname}.par"
         copytemplate(partemp,parfile,{
-                    "jobname" : jobname,
-                    "transfer": transfer,
-                    "jobdir"  : jobdir,
-                    "outdir"  : outdir,
-                    "zmax"    : zmax,
-                    "ngrid"   : ngrid,
-                    "lbox"    : lbox,
-                    "h"       : f"{cosmo.params['h']:0.6f}",
-                    "omegam"  : f"{cosmo.params['omegam']:0.6f}",
-                    "omegal"  : f"{cosmo.params['omegal']:0.6f}",
-                    "sigma8"  : f"{cosmo.params['sigma8']:0.6f}",
-                    "ns"      : f"{cosmo.params['ns']:0.6f}",
-                    "dRedTo"  : f"{self.params['dRedTo']}",
-                    "nSteps"  : f"{self.params['nSteps']}"
+                    "achOutName"  : jobdir,
+                    "achTfFile"   : achTfFile,
+                    "dRedshiftLCP": dRedshiftLCP,
+                    "dSpectral"   : f"{cosmo.params['ns']:0.6f}",
+                    "h"           : f"{cosmo.params['h']:0.6f}",
+                    "dOmega0"     : f"{cosmo.params['omegam']:0.6f}",
+                    "dLambda"     : f"{cosmo.params['omegal']:0.6f}",
+                    "dSigma8"     : f"{cosmo.params['sigma8']:0.6f}",
+                    "dRedFrom"    : f"{self.params['dRedFrom']}",
+                    "ngrid"       : f"{self.params['nGrid']:<4}",
+                    "dBoxSize"    : f"{self.params['dBoxSize']:<4}",
+                    "iLPT"        : f"{self.params['iLPT']}",
+                    "dRedTo"      : f"{self.params['dRedTo']}",
+                    "nSteps"      : f"{self.params['nSteps']}"
+
         })
 
         # slurm batch script
@@ -179,7 +188,7 @@ class Simulation:
                     "nodes"     : nodes,
                     "jobname"   : jobname,
                     "runscript" : runscript,
-                    "lbox"      : lbox,
+                    "dBoxSize"      : dBoxSize,
                     "parfile"   : parfile
             })
         print(f"created {slurmfile}")
