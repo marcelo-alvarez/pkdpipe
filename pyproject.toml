@@ -21,3 +21,5 @@ packages = ["pkdpipe"]
 [project.urls]
 Homepage = "http://github.com/marcelo-alvarez/pkdpipe"
 
+[project.scripts]
+pkdpipe-submit = "pkdpipe.cli:submit"
