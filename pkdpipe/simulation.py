@@ -60,13 +60,14 @@ def get_simulation(simname):
         'sbatch' : {'val' :      False, 'type' :  bool, 'desc' : 'submit with sbatch; otherwise only create dir & files'}}
 
     # only lightcone tests are implemented so far
-    params['jobname']['val'] = simname
     if simname == 'lcone-medium':
         pass
     elif simname == 'lcone-small':
+        params['lbox']['val']  = 525
         params['ngrid']['val'] = 700
         params['nodes']['val'] = 1
     elif simname == 'lcone-large':
+        params['lbox']['val']  = 2100
         params['ngrid']['val'] = 2800
         params['nodes']['val'] = 16
     return params
@@ -138,11 +139,9 @@ class Simulation:
                 sys.exit(1)
 
         os.makedirs(outdir)
-        print(f"created {outdir}")
 
         runscript = f"{jobdir}/run.sh"
         shutil.copy(runtemp, runscript)
-        print(f"created {runscript}")
 
         # get cosmology
         cosmo  = Cosmology(cosmology='desi-dr2-planck-act-mnufree')
@@ -152,7 +151,6 @@ class Simulation:
 
         # write transfer file
         cosmo.writetransfer(transfer)
-        print(f"created {transfer}")
 
         # parameter file
         parfile = f"{jobdir}/{jobname}.par"
@@ -172,7 +170,6 @@ class Simulation:
                     "dRedTo"  : f"{self.params['dRedTo']}",
                     "nSteps"  : f"{self.params['nSteps']}"
         })
-        print(f"created {parfile}")
 
         # slurm batch script
         slurmfile = f"{jobdir}/launch.sh"
