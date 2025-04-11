@@ -22,6 +22,7 @@ dSpectral       = ${dSpectral}
 # Snapshot I/O
 nSteps          = ${nSteps}
 dRedTo          = ${dRedTo}
+iOutInterval    = ${iOutInterval} # steps between snapshots (0 for no snapshots)
 
 # ------------------ Hardcoded parameters ------------------
 
@@ -50,8 +51,7 @@ bPeriodic       = True          # with a periodic box
 bEwald          = True          # enable Ewald periodic boundaries
 
 # Logging/Output
-iOutInterval    = 0 # Do not dump snapshots
-iCheckInterval = 0 # checkpoints
+iCheckInterval  = 0 # checkpoints
 bDoDensity      = False
 bVDetails       = True
 
