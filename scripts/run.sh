@@ -12,4 +12,4 @@ module load python
 mamba activate pkdgrav
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$condalib
 module unload python
-srun $args $exe $parfile
+stdbuf -oL nohup srun $args $exe $parfile

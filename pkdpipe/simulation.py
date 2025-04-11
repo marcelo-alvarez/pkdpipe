@@ -58,12 +58,13 @@ def get_simulation(simname):
         'tlimit'  : {'val' : '48:00:00', 'type' :   str, 'desc' : 'time limit'}
     }
     pkd_params = {
-        'nGrid'   : {'val' :       1400, 'type' :   int, 'desc' : 'cube root particle number'},
-        'dBoxSize': {'val' :       1050, 'type' : float, 'desc' : 'boxsize [Mpc/h]'},
-        'dRedFrom': {'val' :         12, 'type' : float, 'desc' : 'starting redshift'},
-        'iLPT'    : {'val' :          3, 'type' :   int, 'desc' : 'LPT order for ICs'},
-        'dRedTo'  : {'val' :    ddRedTo, 'type' :   str, 'desc' : 'output redshifts'},
-        'nSteps'  : {'val' :    dnSteps, 'type' :   str, 'desc' : 'output steps'}
+        'nGrid'        : {'val' :       1400, 'type' :   int, 'desc' : 'cube root particle number'},
+        'dBoxSize'     : {'val' :       1050, 'type' : float, 'desc' : 'boxsize [Mpc/h]'},
+        'dRedFrom'     : {'val' :         12, 'type' : float, 'desc' : 'starting redshift'},
+        'iLPT'         : {'val' :          3, 'type' :   int, 'desc' : 'LPT order for ICs'},
+        'dRedTo'       : {'val' :    ddRedTo, 'type' :   str, 'desc' : 'output redshifts'},
+        'nSteps'       : {'val' :    dnSteps, 'type' :   str, 'desc' : 'output steps'},
+        'iOutInterval' : {'val' :          1, 'type' :   int, 'desc' : 'snapshot interval'}
     }
     params = pkp_params | job_params | pkd_params
 
@@ -176,8 +177,8 @@ class Simulation:
                     "dBoxSize"    : f"{self.params['dBoxSize']:<4}",
                     "iLPT"        : f"{self.params['iLPT']}",
                     "dRedTo"      : f"{self.params['dRedTo']}",
-                    "nSteps"      : f"{self.params['nSteps']}"
-
+                    "nSteps"      : f"{self.params['nSteps']}",
+                    "iOutInterval": f"{self.params['iOutInterval']}"
         })
 
         # slurm batch script
