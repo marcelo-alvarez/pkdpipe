@@ -24,4 +24,4 @@ y = boxsize * parts['y']
 vx = parts['vx']
 vy = parts['vy']
 
-Mfof = data[box]['npart'] * pmass # Msun/h
+Mfof = parts['npart'] * pmass # Msun/h

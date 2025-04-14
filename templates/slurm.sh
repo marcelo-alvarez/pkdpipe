@@ -6,10 +6,10 @@
 #SBATCH --mail-user=${email}
 #SBATCH -L SCRATCH
 #SBATCH -C gpu
-#SBATCH --gpus-per-node=4
-
+#SBATCH --gpus-per-node=${gpupern}
+#SBATCH --cpus-per-task=${cpupert}
 #SBATCH -N ${nodes}
 #SBATCH -J ${jobname}
 #SBATCH --output=log-${jobname}.%j.oe
 
-source ${runscript} ${nodes} ${parfile}
+${runcmd}s
