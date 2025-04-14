@@ -12,16 +12,51 @@ from pkdpipe.cli import parsecommandline
 pkdpipe simulation
 """
 
-djobname = "N{ngrid}-L{dBoxSize}-{nodes*4}gpus"
-demail   = "${pkdgravemail}"
-dsimname = "lcone-small"
+# Defaults
+dspath  = f"{os.getenv('SCRATCH')}/pkdgrav3/runs"
+dpath   = f"{os.getenv('CFS')}/cosmosim/slac/{os.getenv('USER')}/pkdgrav3/runs"
+
+djobname   = "N{nGrid}-L{dBoxSize}-{nodes.gpupern}gpus"
+demail     = "${pkdgravemail}"
+dsimname   = "lcone-small"
+dcosmo     = "desi-dr2-planck-act-mnufree"
+
+dredshiftlist = sorted([3. , 2.81388253, 2.6350418 , 2.46500347, 2.30360093,
+    2.1496063 , 2.003003  , 1.86204923, 1.72851296, 1.60145682,
+    1.48015873, 1.36406619, 1.25377507, 1.1486893 , 1.04834084,
+    0.9527436 , 0.8615041 , 0.77462289, 0.69176112, 0.61290323,
+    0.53751538, 0.46584579, 0.39742873, 0.33226752, 0.27000254,
+    0.21065375, 0.15420129, 0.10035211, 0.04898773, 0.        ] + 
+    [0.295, 0.510, 0.706, 0.934, 1.321, 1.484, 2.33, 0.922, 0.955],reverse=True)
+
+ddRedTo = f'{[f'{z:0.4f}' for z in dredshiftlist]}'.replace("'", "")
+dnSteps = f'{[f'{i}' for i in range(len(dredshiftlist))]}'.replace("'", "")
 
 templatedir = f"{str(pathlib.Path(__file__).parent.resolve())}/../templates"
 scriptdir   = f"{str(pathlib.Path(__file__).parent.resolve())}/../scripts"
 
 partemp   = f"{templatedir}/lightcone.par"
-slurmtemp = f"{templatedir}/pkdgrav.sh"
+slurmtemp = f"{templatedir}/slurm.sh"
 runtemp   = f"{scriptdir}/run.sh"
+
+def safemkdir(dir):
+    if os.path.isdir(dir):
+        response = input(f"{dir} already exists; enter REMOVE if you want to delete it\n")
+        if response == "REMOVE":
+            nsleep=10
+            for i in range(nsleep):
+                print(f"will delete {dir} in {nsleep-i} seconds...",end='\r')
+                subprocess.call(f"sleep 1", shell=True)
+            print()
+            if len(dir) > 10:
+                subprocess.call(f"rm -rf {dir}", shell=True)
+            else:
+                return 1
+        else:
+            return 1
+    # make directory
+    os.makedirs(f"{dir}")
+    return 0
 
 def copytemplate(templatefile,outfile,data):
     with open(templatefile, "r") as file:
@@ -32,34 +67,26 @@ def copytemplate(templatefile,outfile,data):
         par.write(lines)
 
 def get_simulation(simname):
-    dpath    = f"{os.getenv('SCRATCH')}/pkdgrav3/runs"
-    dcosmo = 'desi-dr2-planck-act-mnufree'
-    redshiftlist = sorted([3. , 2.81388253, 2.6350418 , 2.46500347, 2.30360093,
-       2.1496063 , 2.003003  , 1.86204923, 1.72851296, 1.60145682,
-       1.48015873, 1.36406619, 1.25377507, 1.1486893 , 1.04834084,
-       0.9527436 , 0.8615041 , 0.77462289, 0.69176112, 0.61290323,
-       0.53751538, 0.46584579, 0.39742873, 0.33226752, 0.27000254,
-       0.21065375, 0.15420129, 0.10035211, 0.04898773, 0.        ] + 
-       [0.295, 0.510, 0.706, 0.934, 1.321, 1.484, 2.33, 0.922, 0.955],reverse=True)
-    ddRedTo = f'{[f'{z:0.4f}' for z in redshiftlist]}'.replace("'", "")
-    dnSteps = f'{[f'{i}' for i in range(len(redshiftlist))]}'.replace("'", "")
-
     pkp_params = {
         'sbatch'  : {'val' :      False, 'type' :  bool, 'desc' : 'submit with sbatch; otherwise only create dir & files'},
-        'simname' : {'val' :   dsimname, 'type' :   str, 'desc' : 'simulation parameter set name'},
-        'cosmo'   : {'val' :     dcosmo, 'type' :   str, 'desc' : 'cosmology'}
+        'interact': {'val' :      False, 'type' :  bool, 'desc' : 'submit as interactive; otherwise only create dir & files'}
     }
     job_params = {
         'nodes'   : {'val' :          2, 'type' :   int, 'desc' : 'number of nodes'},
-        'gpuper'  : {'val' :          4, 'type' :   int, 'desc' : 'GPUs per node'},
+        'cpupert' : {'val' :        128, 'type' :   int, 'desc' : 'CPUs per task'},
+        'gpupern' : {'val' :          4, 'type' :   int, 'desc' : 'GPUs per node'},
         'rundir'  : {'val' :      dpath, 'type' :   str, 'desc' : 'path for runs'},
+        'scrdir'  : {'val' :     dspath, 'type' :   str, 'desc' : 'scratch path for runs (if --scratch provided)'},
         'jobname' : {'val' :   djobname, 'type' :   str, 'desc' : 'directory name for run'},
         'email'   : {'val' :     demail, 'type' :   str, 'desc' : 'email for slurm notifications'},
-        'tlimit'  : {'val' : '48:00:00', 'type' :   str, 'desc' : 'time limit'}
+        'tlimit'  : {'val' : '48:00:00', 'type' :   str, 'desc' : 'time limit'},
+        'simname' : {'val' :   dsimname, 'type' :   str, 'desc' : 'simulation parameter set name'},
+        'cosmo'   : {'val' :     dcosmo, 'type' :   str, 'desc' : 'cosmology'},
+        'scratch' : {'val' :      False, 'type' :  bool, 'desc' : 'use scratch for output'}
     }
     pkd_params = {
         'nGrid'        : {'val' :       1400, 'type' :   int, 'desc' : 'cube root particle number'},
-        'dBoxSize'     : {'val' :       1050, 'type' : float, 'desc' : 'boxsize [Mpc/h]'},
+        'dBoxSize'     : {'val' :       1050, 'type' :   int, 'desc' : 'boxsize [Mpc/h]'},
         'dRedFrom'     : {'val' :         12, 'type' : float, 'desc' : 'starting redshift'},
         'iLPT'         : {'val' :          3, 'type' :   int, 'desc' : 'LPT order for ICs'},
         'dRedTo'       : {'val' :    ddRedTo, 'type' :   str, 'desc' : 'output redshifts'},
@@ -89,80 +116,70 @@ class Simulation:
         self.simname = kwargs.get('simname', dsimname)
 
         # initialize parameters using parser
-        self.params = parsecommandline(get_simulation(self.simname))
+        self.params = parsecommandline(get_simulation(self.simname),
+                                       description='Commandline interface to pkdpipe.Simulation')
 
         if kwargs.get('parse', False):
             # if requested parse again to retrieve updated simulation name from command-line
             self.simname = self.params['simname']
-            self.params = parsecommandline(get_simulation(self.simname))
+            self.params = parsecommandline(get_simulation(self.simname),
+                                           description='Commandline interface to pkdpipe.Simulation')
 
         # update parameters via kwargs
         for key in self.params:
             self.params[key] = kwargs.get(key,self.params[key])
 
-    def update_params(self, params):
-        self.params = get_simulation(params['simname'])
-        print(self.params['simname'])
-        for key in params:
-            self.params[key] = params[key]
+    def create(self):
 
-    def submit(self):
-
-        nGrid    = self.params['nGrid']
-        dBoxSize = self.params['dBoxSize']
-        nodes    = self.params['nodes']
-        rundir   = self.params['rundir']
-        jobname  = self.params['jobname']
-        tlimit   = self.params['tlimit']
-        email    = self.params['email']
-        sbatch   = self.params['sbatch']
-
-        gpus = nodes * self.params['gpuper']
-
-        if jobname == djobname:
-            jobname = f"N{ngrid:04d}-L{dBoxSize}-{gpus:03d}gpus"
-            
-        if email == demail:
-            email = os.getenv('pkdgravemail')
-
-        jobdir  = f"{rundir}/{jobname}"
-        outdir  = f"{jobdir}/output"
-
-        achTfFile = f"{jobdir}/{jobname}-transfer.dat"
-
-        if os.path.isdir(jobdir):
-            response = input(f"{jobdir} already exists; enter REMOVE if you want to delete it\n")
-            if response == "REMOVE":
-                nsleep=10
-                for i in range(nsleep):
-                    print(f"will delete {jobdir} in {nsleep-i} seconds...",end='\r')
-                    subprocess.call(f"sleep 1", shell=True)
-                print()
-                if len(jobdir) > 10:
-                    subprocess.call(f"rm -rf {jobdir}", shell=True)
-                else:
-                    print(f"exiting...")
-                    sys.exit(1)
-            else:
-                print(f"exiting...")
-                sys.exit(1)
-
-        os.makedirs(outdir)
-
+        # file and directory names
+        jobdir    = f"{self.params['rundir']}/{ self.params['jobname']}"
+        jobscr    = f"{self.params['scrdir']}/{ self.params['jobname']}"
+        achTfFile = f"{jobdir}/{self.params['jobname']}.transfer"
+        slurmfile = f"{jobdir}/{self.params['jobname']}.sbatch"
+        parfile   = f"{jobdir}/{self.params['jobname']}.par"
+        logfile   = f"{jobdir}/{self.params['jobname']}.log"
         runscript = f"{jobdir}/run.sh"
+
+        # run command
+        runcmd = f"{runscript} {parfile} {logfile}"
+
+        # set job name
+        if self.params['jobname'] == djobname:
+            gpus     = self.params['gpupern'] * self.params['nodes']
+            nGrid    = self.params['nGrid']
+            dBoxSize = self.params['dBoxSize']
+            self.params['jobname'] = f"N{nGrid:04d}-L{dBoxSize}-{gpus:03d}gpus"
+            
+        # set email
+        if self.params['email'] == demail:
+            self.params['email'] = os.getenv('pkdgravemail')
+
+        # make job directory
+        if safemkdir(jobdir) > 0:
+            print('exiting...')
+            sys.exit(1)
+
+        # make scratch output directory and link
+        if self.params['scratch']:
+            outdir=f"{jobscr}/output"
+            if safemkdir(outdir) > 0:
+                print('exiting...')
+                sys.exit(1)
+            subprocess.call(f"ln -s {outdir} {jobdir}/", shell=True)
+
+        # copy runscript
         shutil.copy(runtemp, runscript)
 
         # get cosmology
-        cosmo  = Cosmology(cosmology='desi-dr2-planck-act-mnufree')
+        cosmo  = Cosmology(cosmology=self.params['cosmo'])
 
         # get maximum redshift
-        dRedshiftLCP = f"{cosmo.chi2z(dBoxSize/cosmo.params['h'])+0.01:0.2f}"
+        dRedshiftLCP = f"{cosmo.chi2z(self.params['dBoxSize']/cosmo.params['h'])+0.01:0.2f}"
 
         # write transfer file
         cosmo.writetransfer(achTfFile)
 
-        # parameter file
-        parfile = f"{jobdir}/{jobname}.par"
+        # generate parameter file
         copytemplate(partemp,parfile,{
                     "achOutName"  : jobdir,
                     "achTfFile"   : achTfFile,
@@ -173,7 +190,7 @@ class Simulation:
                     "dLambda"     : f"{cosmo.params['omegal']:0.6f}",
                     "dSigma8"     : f"{cosmo.params['sigma8']:0.6f}",
                     "dRedFrom"    : f"{self.params['dRedFrom']}",
-                    "ngrid"       : f"{self.params['nGrid']:<4}",
+                    "nGrid"       : f"{self.params['nGrid']:<4}",
                     "dBoxSize"    : f"{self.params['dBoxSize']:<4}",
                     "iLPT"        : f"{self.params['iLPT']}",
                     "dRedTo"      : f"{self.params['dRedTo']}",
@@ -181,18 +198,23 @@ class Simulation:
                     "iOutInterval": f"{self.params['iOutInterval']}"
         })
 
-        # slurm batch script
-        slurmfile = f"{jobdir}/launch.sh"
+        # generate slurm batch script
         copytemplate(slurmtemp,slurmfile,{
-                    "tlimit"    : tlimit,
-                    "email"     : email,
-                    "nodes"     : nodes,
-                    "jobname"   : jobname,
-                    "runscript" : runscript,
-                    "dBoxSize"      : dBoxSize,
-                    "parfile"   : parfile
+                    "tlimit"    : self.params['tlimit'],
+                    "email"     : self.params['email'],
+                    "nodes"     : self.params['nodes'],
+                    "cpupert"   : self.params['cpupert'],
+                    "gpupern"   : self.params['gpupern'],
+                    "jobname"   : self.params['jobname'],
+                    "runcmd"    : runcmd
             })
         print(f"created {slurmfile}")
 
-        if sbatch:
+        # submit slurm batch job
+        if self.params['sbatch']:
             subprocess.call(f"sbatch {slurmfile}", shell=True)
+
+        # run interactive job
+        if self.params['interact']:
+            runcmd = f"{runcmd} interactive"#.split(" ")
+            subprocess.call(runcmd,shell=True)

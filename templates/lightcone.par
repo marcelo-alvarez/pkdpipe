@@ -8,7 +8,7 @@ dRedshiftLCP    = ${dRedshiftLCP} # outer lightcone redshift
 
 # Initial Condition
 dBoxSize        = ${dBoxSize} # Mpc/h
-nGrid           = ${ngrid} # Simulation has nGrid^3 particles
+nGrid           = ${nGrid} # Simulation has nGrid^3 particles
 iLPT            = ${iLPT}    # LPT order for IC
 dRedFrom        = ${dRedFrom}   # Starting redshift
 

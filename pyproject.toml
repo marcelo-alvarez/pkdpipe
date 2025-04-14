@@ -22,4 +22,4 @@ packages = ["pkdpipe"]
 Homepage = "http://github.com/marcelo-alvarez/pkdpipe"
 
 [project.scripts]
-pkdpipe-submit = "pkdpipe.cli:submit"
+pkdpipe-create = "pkdpipe.cli:create"
