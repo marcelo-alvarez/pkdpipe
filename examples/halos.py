@@ -1,4 +1,4 @@
-from pkdpipe.datainterface import DataInterface
+from pkdpipe.data import Data
 
 # number of process
 nproc=64
@@ -12,7 +12,7 @@ simpath = "/pscratch/sd/m/malvarez/pkdgrav3/scaling-tests/"
 param_file = f"{simpath}/N1400-L1050-008gpus/N1400-L1050-008gpus.par"
 #param_file = f"{simpath}/N2800-L2100-064gpus/N2800-L2100-064gpus.par"
 
-pkdata = DataInterface(param_file=param_file,nproc=nproc)
+pkdata = Data(param_file=param_file,nproc=nproc)
 parts = pkdata.fetch_data(bbox,dataset='xvh',filetype='fof')
 
 boxsize  = pkdata.params['boxsize'] / 1e3 # Gpc/h
