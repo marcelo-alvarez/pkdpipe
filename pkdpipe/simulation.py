@@ -21,12 +21,12 @@ demail     = "${pkdgravemail}"
 dsimname   = "lcone-small"
 dcosmo     = "desi-dr2-planck-act-mnufree"
 
-dredshiftlist = sorted([3. , 2.81388253, 2.6350418 , 2.46500347, 2.30360093,
-    2.1496063 , 2.003003  , 1.86204923, 1.72851296, 1.60145682,
-    1.48015873, 1.36406619, 1.25377507, 1.1486893 , 1.04834084,
-    0.9527436 , 0.8615041 , 0.77462289, 0.69176112, 0.61290323,
-    0.53751538, 0.46584579, 0.39742873, 0.33226752, 0.27000254,
-    0.21065375, 0.15420129, 0.10035211, 0.04898773, 0.        ] + 
+dredshiftlist = sorted([3., 2.81388253, 2.63504180, 2.46500347, 2.30360093,
+    2.14960630, 2.00300300, 1.86204923, 1.72851296, 1.60145682, 1.48015873,
+    1.36406619, 1.25377507, 1.14868930, 1.04834084, 0.95274360, 0.86150410,
+    0.77462289, 0.69176112, 0.61290323, 0.53751538, 0.46584579, 0.39742873, 
+    0.33226752, 0.27000254, 0.21065375, 0.15420129, 0.10035211, 0.04898773, 
+    0.00000000] + 
     [0.295, 0.510, 0.706, 0.934, 1.321, 1.484, 2.33, 0.922, 0.955],reverse=True)
 
 ddRedTo = f'{[f'{z:0.4f}' for z in dredshiftlist]}'.replace("'", "")
@@ -212,9 +212,9 @@ class Simulation:
 
         # submit slurm batch job
         if self.params['sbatch']:
-            subprocess.call(f"sbatch {slurmfile}", shell=True)
+            subprocess.call(f"sbatch {slurmfile}", shell=True, cwd=jobdir)
 
         # run interactive job
         if self.params['interact']:
             runcmd = f"{runcmd} interactive"#.split(" ")
-            subprocess.call(runcmd,shell=True)
+            subprocess.call(runcmd, shell=True, cwd=jobdir)
