@@ -174,7 +174,7 @@ class Simulation:
         cosmo  = Cosmology(cosmology=self.params['cosmo'])
 
         # get maximum redshift
-        dRedshiftLCP = f"{cosmo.chi2z(self.params['dBoxSize']/cosmo.params['h'])+0.01:0.2f}"
+        dRedshiftLCP = f"{cosmo.chi2z(self.params['dBoxSize']/cosmo.params['h']*0.98):0.2f}"
 
         # write transfer file
         cosmo.writetransfer(achTfFile)
