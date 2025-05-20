@@ -35,17 +35,43 @@ from .config import (
     PKDGRAVEMAIL
 )
 
+"""
+pkdpipe simulation setup and management module.
+
+This module provides the `Simulation` class, which is responsible for orchestrating
+the setup of pkdgrav3 N-body simulations. This includes:
+- Managing simulation parameters, with support for presets and command-line overrides.
+- Creating necessary directory structures for simulation runs (run and scratch directories).
+- Generating configuration files required by pkdgrav3:
+    - Transfer function file (via the `Cosmology` class).
+    - Main parameter file (.par) for pkdgrav3.
+    - SLURM batch submission script (.sbatch).
+- Copying essential scripts (e.g., `run.sh`) to the job directory.
+- Optionally submitting the job to a SLURM scheduler or providing instructions for manual execution.
+
+The module also includes utility functions for safe directory creation (`safemkdir`)
+and template file processing (`copy_template_with_substitution`).
+"""
+
 def safemkdir(dir_path: str, force_remove_delay: int = 10) -> None:
     """
-    Safely creates a directory. If the directory exists, prompts the user
-    for removal.
+    Safely creates a directory. If the directory already exists, it prompts
+    the user for confirmation before attempting to remove and recreate it.
+
+    This function is designed to prevent accidental deletion of important directories.
+    A delay is enforced before removal if confirmed by the user.
 
     Args:
-        dir_path: The path to the directory to be created.
-        force_remove_delay: Seconds to wait before removing if user confirms.
+        dir_path (str): The absolute or relative path to the directory to be created.
+        force_remove_delay (int): The number of seconds to wait before removing the
+                                  existing directory if the user confirms removal.
+                                  Defaults to 10 seconds.
 
     Raises:
-        DirectoryError: If directory creation or removal fails.
+        DirectoryError: If directory creation fails, if the user aborts due to an
+                        existing directory, or if removal of an existing directory fails.
+                        Also raised if the path is deemed too shallow (e.g., '/') for
+                        automatic removal as a safety measure.
     """
     if os.path.isdir(dir_path):
         response = input(
@@ -80,15 +106,25 @@ def copy_template_with_substitution(template_file_path: Union[str, pathlib.Path]
                                     output_file_path: Union[str, pathlib.Path], 
                                     substitutions: Dict[str, Any]) -> None:
     """
-    Reads a template file, performs substitutions, and writes to an output file.
+    Reads a template file, performs string substitutions using `string.Template`,
+    and writes the result to an output file.
+
+    This is used for generating configuration files like .par files or .sbatch scripts
+    from predefined templates by replacing placeholders (e.g., `${jobname}`)
+    with actual values.
 
     Args:
-        template_file_path: Path to the template file.
-        output_file_path: Path to the output file.
-        substitutions: A dictionary of {placeholder: value} for substitution.
+        template_file_path (Union[str, pathlib.Path]): Path to the input template file.
+        output_file_path (Union[str, pathlib.Path]): Path where the rendered output file
+                                                    will be written.
+        substitutions (Dict[str, Any]): A dictionary where keys are placeholder names
+                                        (without the `${}` or `$`) in the template, and
+                                        values are their corresponding replacements.
 
     Raises:
-        TemplateError: If template processing or file operations fail.
+        TemplateError: If the template file is not found, if there's an I/O error during
+                       file operations, if a key required by the template is missing in
+                       `substitutions`, or for any other unexpected error during template processing.
     """
     try:
         with open(template_file_path, "r") as f_template:
@@ -111,13 +147,23 @@ def copy_template_with_substitution(template_file_path: Union[str, pathlib.Path]
 
 def get_default_simulation_parameters(sim_preset_name: str = DEFAULT_SIMULATION_NAME) -> Dict[str, Any]:
     """
-    Constructs a dictionary of default simulation parameters, applying a preset if specified.
+    Constructs a dictionary of default simulation parameters, optionally applying a preset.
+
+    This function defines the baseline parameters for a simulation. If `sim_preset_name`
+    corresponds to a defined preset in `config.SIMULATION_PRESETS`, those preset values
+    will override the baseline defaults. The returned dictionary is structured to be
+    compatible with `pkdpipe.cli.parsecommandline`.
 
     Args:
-        sim_preset_name: The name of the simulation preset to apply from config.SIMULATION_PRESETS.
+        sim_preset_name (str): The name of the simulation preset to apply.
+                               Defaults to `DEFAULT_SIMULATION_NAME`. If the preset is not
+                               found, a warning is issued, and base defaults (or the
+                               `DEFAULT_SIMULATION_NAME` preset if it exists) are used.
 
     Returns:
-        A dictionary containing all parameters for a simulation.
+        Dict[str, Any]: A dictionary where keys are parameter names (e.g., 'nGrid', 'dBoxSize')
+                        and values are dictionaries containing 'val' (default value),
+                        'type' (inferred type of the value), and 'desc' (a description).
     """
     base_params = {
         'sbatch': False,
@@ -161,7 +207,7 @@ def get_default_simulation_parameters(sim_preset_name: str = DEFAULT_SIMULATION_
             param_type = int
         elif param_type == str and default_value.replace('.', '', 1).isdigit():
              param_type = float
-        elif isinstance(default_value, bool):  # Changed from 'default_value in [True, False]'
+        elif isinstance(default_value, bool):
             param_type = bool
         
         cli_structured_params[param_name] = {
@@ -174,19 +220,48 @@ def get_default_simulation_parameters(sim_preset_name: str = DEFAULT_SIMULATION_
 class Simulation:
     """
     Manages the setup, configuration, and creation of pkdgrav3 simulation runs.
+
+    This class encapsulates all the logic for preparing a simulation. It handles:
+    - Parameter parsing (from defaults, presets, direct input, or CLI).
+    - Directory creation and management (run and scratch directories).
+    - Generation of pkdgrav3 parameter files (.par).
+    - Generation of transfer function files (using the `Cosmology` class).
+    - Generation of SLURM submission scripts (.sbatch).
+    - Copying necessary helper scripts (e.g., `run.sh`).
+    - Optionally submitting the job to SLURM or providing interactive run instructions.
+
+    Attributes:
+        params (Dict[str, Any]): A dictionary holding all parameters for the simulation.
+                                 This includes paths, cosmological settings, job settings,
+                                 and pkdgrav3 specific parameters. It's populated during
+                                 initialization and augmented by various setup methods.
+                                 A key 'jobname_actual' is added which resolves the job name
+                                 from 'jobname_template'.
     """
     def __init__(self, params: Dict[str, Any] | None = None, parse_cli_args: bool = False, **kwargs):
         """
-        Initializes the Simulation instance.
+        Initializes the Simulation instance, resolving parameters from various sources.
+
+        The order of parameter precedence is generally:
+        1. Command-line arguments (if `parse_cli_args` is True).
+        2. `params` dictionary provided directly.
+        3. `kwargs` provided directly.
+        4. Values from a simulation preset specified by `simname` (via `get_default_simulation_parameters`).
+        5. Hardcoded defaults (via `get_default_simulation_parameters`).
+
+        After parameter resolution, `_resolve_job_name` is called to set `self.params['jobname_actual']`.
 
         Args:
-            params: A dictionary of parameters to override defaults. 
-                    If parse_cli_args is True, these are ignored initially.
-            parse_cli_args: If True, parameters will be parsed from the command line
-                            using `pkdpipe.cli.parsecommandline`. Defaults are fetched
-                            using `get_default_simulation_parameters`.
-            **kwargs: Additional keyword arguments to override parameters if `params` is None
-                      and `parse_cli_args` is False.
+            params (Dict[str, Any] | None): A dictionary of parameters to use for the simulation.
+                                            If `parse_cli_args` is True, these are used as defaults
+                                            for the CLI parser. Defaults to None.
+            parse_cli_args (bool): If True, parameters are parsed from command-line arguments
+                                   using `pkdpipe.cli.parsecommandline`. The defaults for the
+                                   parser are obtained from `get_default_simulation_parameters`.
+                                   Defaults to False.
+            **kwargs (Any): Additional keyword arguments that will override parameters obtained
+                            from defaults or presets if `params` is None and `parse_cli_args` is False.
+                            A 'simname' kwarg can be used to specify a preset.
         """
         if parse_cli_args:
             from .cli import parsecommandline
@@ -214,8 +289,13 @@ class Simulation:
 
     def _resolve_job_name(self) -> None:
         """
-        Resolves the job name using the jobname_template and current parameters.
-        Stores the result in self.params['jobname_actual'].
+        Resolves the actual job name from the `jobname_template` and current parameters.
+
+        The job name template (e.g., "N${nGrid}-L${dBoxSize}-G${gpupern}") is populated
+        using values from `self.params` like 'nGrid', 'dBoxSize', and 'gpupern'.
+        The resolved name is stored in `self.params['jobname_actual']`.
+        If any required keys for the template are missing or if an error occurs during
+        substitution, a warning is printed, and a fallback job name is generated.
         """
         template_str = self.params.get('jobname_template', DEFAULT_JOB_NAME_TEMPLATE)
         try:
@@ -243,13 +323,24 @@ class Simulation:
 
     def _setup_directories_and_paths(self) -> Dict[str, pathlib.Path]:
         """
-        Sets up job directories and defines key file paths.
+        Creates the main job directory and, if specified, a scratch directory.
+        Defines and returns a dictionary of key file and directory paths for the simulation.
+
+        The job directory is created under `self.params['rundir'] / self.params['jobname_actual']`.
+        If `self.params['scratch']` is True, a corresponding directory is created under
+        `self.params['scrdir']`, and a symlink named "scratch_output" is created in the
+        job directory pointing to this scratch space. The effective output path for pkdgrav3
+        (`ach_out_name_effective`) is set accordingly.
+
+        Uses `safemkdir` for directory creation.
 
         Returns:
-            A dictionary of important paths (job_dir, job_scr_dir, etc.).
-        
+            Dict[str, pathlib.Path]: A dictionary mapping descriptive keys (e.g., "job_dir",
+                                     "parfile", "transferfile", "ach_out_name_effective")
+                                     to their `pathlib.Path` objects.
+
         Raises:
-            DirectoryError: If directory creation fails.
+            DirectoryError: If `safemkdir` fails to create any of the required directories.
         """
         actual_job_name = self.params.get('jobname_actual', f"pkdpipe_fallback_jobname_{time.time():.0f}")
         base_run_dir = pathlib.Path(self.params['rundir'])
@@ -282,7 +373,24 @@ class Simulation:
 
     def _generate_cosmology_transfer_file(self, cosmo_params: Dict[str, Any], transfer_file_path: pathlib.Path) -> None:
         """
-        Initializes Cosmology and writes the transfer function file.
+        Initializes a `Cosmology` object and writes the transfer function file.
+
+        This method uses the cosmological parameters specified in `cosmo_params`
+        (typically derived from `self.params`) to instantiate a `Cosmology` object.
+        It then calls the `writetransfer` method of the `Cosmology` instance to generate
+        and save the transfer function to `transfer_file_path`.
+
+        After generating the transfer file, it updates `self.params` with 'effective'
+        cosmological parameters (h, omegam, omegal, sigma8, ns) obtained from the
+        `Cosmology` instance. These effective parameters reflect the actual values used
+        by CAMB, including any defaults or normalizations applied within the `Cosmology` class.
+
+        Args:
+            cosmo_params (Dict[str, Any]): A dictionary of parameters to pass to the
+                                           `Cosmology` constructor. Should include 'cosmo'
+                                           for the preset name and any overrides.
+            transfer_file_path (pathlib.Path): The path where the transfer function file
+                                               should be written.
         """
         cosmo_instance = Cosmology(
             cosmology=cosmo_params.get('cosmo', DEFAULT_COSMOLOGY_NAME), 
@@ -299,7 +407,30 @@ class Simulation:
 
     def _generate_parameter_file(self, paths: Dict[str, pathlib.Path]) -> None:
         """
-        Generates the pkdgrav3 .par file.
+        Generates the pkdgrav3 .par (parameter) file using a template.
+
+        This method populates the `TEMPLATE_LIGHTCONE_PAR` template with values from
+        `self.params`. It performs several calculations and lookups:
+        - Determines `dRedshiftLCP` (redshift for lightcone particle placement) by converting
+          the box size (in Mpc) to a comoving distance and then to redshift using the
+          `Cosmology` object's `chi2z`.
+        - Uses 'effective' cosmological parameters (h, omegam, omegal, sigma8, ns) that were
+          set by `_generate_cosmology_transfer_file` to ensure consistency between the
+          transfer function and the .par file.
+        - Substitutes these and other simulation parameters (like nGrid, dBoxSize, output paths)
+          into the template.
+        The resulting file is written to `paths["parfile"]`.
+
+        Args:
+            paths (Dict[str, pathlib.Path]): A dictionary of paths, expected to contain
+                                             "transferfile" (path to the generated transfer file)
+                                             and "parfile" (path where the .par file will be written),
+                                             and "ach_out_name_effective" (output directory for pkdgrav3).
+
+        Raises:
+            ValueError: If `self.params['effective_h']` is missing, None, or zero, as it's critical
+                        for LCP calculations.
+            TemplateError: If `copy_template_with_substitution` fails.
         """
         h_val = self.params.get('effective_h')
         if h_val is None or h_val == 0:
@@ -314,9 +445,8 @@ class Simulation:
         chi_for_lcp_mpc = box_size_mpc_h / h_val
         dRedshiftLCP_val = temp_cosmo_for_chi.chi2z(chi_for_lcp_mpc) + 0.01
 
-        # Retrieve effective parameters, providing defaults if they are None
         effective_ns = self.params.get('effective_ns')
-        effective_h_par = self.params.get('effective_h') # h_val is already validated for calculation
+        effective_h_par = self.params.get('effective_h')
         effective_omegam = self.params.get('effective_omegam')
         effective_omegal = self.params.get('effective_omegal')
         effective_sigma8 = self.params.get('effective_sigma8')
@@ -342,7 +472,24 @@ class Simulation:
 
     def _generate_slurm_script(self, paths: Dict[str, pathlib.Path]) -> None:
         """
-        Generates the SLURM batch script.
+        Generates the SLURM batch submission script (.sbatch) using a template.
+
+        This method populates the `TEMPLATE_SLURM_SH` template with job-specific parameters
+        from `self.params`, such as time limit, email, node/CPU/GPU counts, job name,
+        and the command to run the simulation.
+        The command to run the simulation is constructed using the paths to the `run.sh` script,
+        the .par file, and the log file.
+        The resulting script is written to `paths["slurmfile"]`.
+
+        Args:
+            paths (Dict[str, pathlib.Path]): A dictionary of paths, expected to contain
+                                             "runscript_dest" (path to the copied run.sh),
+                                             "parfile" (path to the .par file),
+                                             "logfile" (path for the simulation log),
+                                             and "slurmfile" (path where the .sbatch script will be written).
+
+        Raises:
+            TemplateError: If `copy_template_with_substitution` fails.
         """
         run_command = f'{paths["runscript_dest"]} {paths["parfile"]} {paths["logfile"]}'
         slurm_substitutions = {
@@ -357,7 +504,20 @@ class Simulation:
         copy_template_with_substitution(TEMPLATE_SLURM_SH, paths["slurmfile"], slurm_substitutions)
 
     def _copy_run_script(self, paths: Dict[str, pathlib.Path]) -> None:
-        """Copies the master run.sh script to the job directory."""
+        """
+        Copies the master `run.sh` script (defined by `SCRIPT_RUN_SH`) to the job directory
+        and makes it executable.
+
+        The script is copied to `paths["runscript_dest"]`.
+
+        Args:
+            paths (Dict[str, pathlib.Path]): A dictionary of paths, expected to contain
+                                             "runscript_dest" where the script should be copied.
+
+        Raises:
+            FileNotFoundError: If the source `SCRIPT_RUN_SH` cannot be found or if copying/
+                               permission setting fails.
+        """
         try:
             shutil.copy(SCRIPT_RUN_SH, paths["runscript_dest"])
             os.chmod(paths["runscript_dest"], 0o755)
@@ -367,7 +527,23 @@ class Simulation:
 
     def _handle_job_submission(self, paths: Dict[str, pathlib.Path]) -> None:
         """
-        Handles job submission (sbatch or interactive message).
+        Handles the job submission process based on `self.params['sbatch']` and
+        `self.params['interact']`.
+
+        - If `sbatch` is True, it attempts to submit the generated SLURM script
+          (`paths["slurmfile"]`) using the `sbatch` command.
+        - If `interact` is True (and `sbatch` is False), it prints instructions for
+          running the simulation interactively.
+        - If neither is True, it prints instructions for manual submission or interactive run.
+
+        Args:
+            paths (Dict[str, pathlib.Path]): A dictionary of paths, needed for constructing
+                                             run commands and identifying the SLURM script.
+                                             Expected keys: "slurmfile", "job_dir", "runscript_dest",
+                                             "parfile", "logfile".
+
+        Raises:
+            JobSubmissionError: If `sbatch` is requested but the `sbatch` command fails or is not found.
         """
         run_command_display = f'{paths["runscript_dest"]} {paths["parfile"]} {paths["logfile"]}'
         if self.params.get('sbatch', False):
@@ -389,8 +565,20 @@ class Simulation:
 
     def create(self) -> None:
         """
-        Orchestrates the creation of the simulation directory, configuration files,
-        and optionally submits the job.
+        Orchestrates the entire process of creating a pkdgrav3 simulation setup.
+
+        This is the main public method to be called on a `Simulation` instance.
+        It performs the following steps in order:
+        1. Sets up directories and paths (`_setup_directories_and_paths`).
+        2. Generates the cosmology transfer function file (`_generate_cosmology_transfer_file`).
+        3. Generates the pkdgrav3 parameter file (`_generate_parameter_file`).
+        4. Generates the SLURM submission script (`_generate_slurm_script`).
+        5. Copies the `run.sh` script (`_copy_run_script`).
+        6. Handles job submission or prints instructions (`_handle_job_submission`).
+
+        Prints status messages throughout the process and a final completion message.
+        Catches and prints specific errors (`DirectoryError`, `TemplateError`, `JobSubmissionError`)
+        as well as any other unexpected exceptions.
         """
         try:
             paths = self._setup_directories_and_paths()
