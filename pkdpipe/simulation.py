@@ -366,8 +366,14 @@ class Simulation:
             if not link_path.exists():
                  os.symlink(job_scr_dir, link_path, target_is_directory=True)
             print(f"Using scratch directory: {job_scr_dir}. Symlinked at {link_path}")
+            # Create output subdirectory in scratch
+            output_dir = job_scr_dir / "output"
+            safemkdir(str(output_dir))
         else:
             paths["ach_out_name_effective"] = str(job_dir)
+            # Create output subdirectory in job directory
+            output_dir = job_dir / "output"
+            safemkdir(str(output_dir))
 
         return paths
 
@@ -443,7 +449,7 @@ class Simulation:
         temp_cosmo_for_chi = Cosmology(cosmology=self.params.get('cosmo', DEFAULT_COSMOLOGY_NAME), h=h_val)
         box_size_mpc_h = float(self.params['dBoxSize'])
         chi_for_lcp_mpc = box_size_mpc_h / h_val
-        dRedshiftLCP_val = temp_cosmo_for_chi.chi2z(chi_for_lcp_mpc) + 0.01
+        dRedshiftLCP_val = temp_cosmo_for_chi.chi2z(chi_for_lcp_mpc*0.98)
 
         effective_ns = self.params.get('effective_ns')
         effective_h_par = self.params.get('effective_h')
@@ -451,8 +457,12 @@ class Simulation:
         effective_omegal = self.params.get('effective_omegal')
         effective_sigma8 = self.params.get('effective_sigma8')
 
+        # Create the output subdirectory path with the job name
+        actual_job_name = self.params.get('jobname_actual', 'pkdpipe_job')
+        output_path = f"{paths['ach_out_name_effective']}/output/{actual_job_name}"
+        
         par_substitutions = {
-            "achOutName": paths["ach_out_name_effective"],
+            "achOutName": output_path,
             "achTfFile": str(paths["transferfile"]),
             "dRedshiftLCP": f"{dRedshiftLCP_val:.2f}",
             "dSpectral": f"{effective_ns if effective_ns is not None else 0.96:0.6f}",
