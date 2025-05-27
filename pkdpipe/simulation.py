@@ -328,7 +328,7 @@ class Simulation:
 
         The job directory is created under `self.params['rundir'] / self.params['jobname_actual']`.
         If `self.params['scratch']` is True, a corresponding directory is created under
-        `self.params['scrdir']`, and a symlink named "scratch_output" is created in the
+        `self.params['scrdir']`, and a symlink named "output" is created in the
         job directory pointing to this scratch space. The effective output path for pkdgrav3
         (`ach_out_name_effective`) is set accordingly.
 
@@ -362,7 +362,7 @@ class Simulation:
             job_scr_dir = base_scratch_dir / actual_job_name
             safemkdir(str(job_scr_dir))
             paths["ach_out_name_effective"] = str(job_scr_dir)
-            link_path = job_dir / "scratch_output"
+            link_path = job_dir / "output"
             if not link_path.exists():
                  os.symlink(job_scr_dir, link_path, target_is_directory=True)
             print(f"Using scratch directory: {job_scr_dir}. Symlinked at {link_path}")
