@@ -286,6 +286,34 @@ class Simulation:
                     self.params[k] = v_dict['val']
 
         self._resolve_job_name()
+        self._validate_parameters()
+
+    def _validate_parameters(self) -> None:
+        """
+        Validates simulation parameters and raises exceptions for invalid values.
+        
+        Raises:
+            ValueError: If any parameter has an invalid value.
+        """
+        # Validate nGrid
+        nGrid = self.params.get('nGrid')
+        if nGrid is not None and (not isinstance(nGrid, int) or nGrid <= 0):
+            raise ValueError(f"nGrid must be a positive integer, got: {nGrid}")
+            
+        # Validate dBoxSize  
+        dBoxSize = self.params.get('dBoxSize')
+        if dBoxSize is not None and (not isinstance(dBoxSize, (int, float)) or dBoxSize <= 0):
+            raise ValueError(f"dBoxSize must be a positive number, got: {dBoxSize}")
+            
+        # Validate nodes
+        nodes = self.params.get('nodes')
+        if nodes is not None and (not isinstance(nodes, int) or nodes <= 0):
+            raise ValueError(f"nodes must be a positive integer, got: {nodes}")
+            
+        # Validate gpupern
+        gpupern = self.params.get('gpupern') 
+        if gpupern is not None and (not isinstance(gpupern, int) or gpupern <= 0):
+            raise ValueError(f"gpupern must be a positive integer, got: {gpupern}")
 
     def _resolve_job_name(self) -> None:
         """
@@ -362,13 +390,13 @@ class Simulation:
             job_scr_dir = base_scratch_dir / actual_job_name
             safemkdir(str(job_scr_dir))
             paths["ach_out_name_effective"] = str(job_scr_dir)
-            link_path = job_dir / "output"
-            if not link_path.exists():
-                 os.symlink(job_scr_dir, link_path, target_is_directory=True)
-            print(f"Using scratch directory: {job_scr_dir}. Symlinked at {link_path}")
             # Create output subdirectory in scratch
             output_dir = job_scr_dir / "output"
             safemkdir(str(output_dir))
+            link_path = job_dir / "output"
+            if not link_path.exists():
+                 os.symlink(output_dir, link_path, target_is_directory=True)
+            print(f"Using scratch directory: {job_scr_dir}. Symlinked at {link_path}")
         else:
             paths["ach_out_name_effective"] = str(job_dir)
             # Create output subdirectory in job directory
