@@ -51,7 +51,7 @@ bPeriodic       = True          # with a periodic box
 bEwald          = True          # enable Ewald periodic boundaries
 
 # Logging/Output
-iCheckInterval  = 0 # checkpoints
+iCheckInterval  = 5 # checkpoints
 bDoDensity      = False
 bVDetails       = True
 

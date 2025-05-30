@@ -61,7 +61,7 @@ _DEFAULT_REDSHIFT_LIST_VALUES = sorted(list(set([
 ])), reverse=True)
 
 DEFAULT_REDSHIFT_TARGETS_STR = f'{[f"{z:0.4f}" for z in _DEFAULT_REDSHIFT_LIST_VALUES]}'.replace("'", "")
-DEFAULT_NSTEPS_STR = f'{[f"{i}" for i in range(len(_DEFAULT_REDSHIFT_LIST_VALUES))]}'.replace("'", "")
+DEFAULT_NSTEPS_STR = f'{[1 for i in range(len(_DEFAULT_REDSHIFT_LIST_VALUES))]}'.replace("'", "")
 
 
 # --- Simulation Presets ---
