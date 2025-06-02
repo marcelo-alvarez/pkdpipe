@@ -46,16 +46,27 @@ class Data:
     def _parse_param_file(self, content: str, varname: str, vartype: type) -> Any:
         """Parse a variable from a parameter file."""
         if vartype == str:
-            match = re.search(r'(?<=' + varname + r')\s*=\s*["\'"].+["\'"]', content)
+            match = re.search(rf'{re.escape(varname)}\s*=\s*["\'"]([^"\']+)["\'"]', content)
             if match is not None:
-                return match[0].split("=")[-1].strip().replace('"', '').replace("'", "")
+                return match.group(1)
         elif vartype == float:
-            match = re.search(r'(?<=' + varname + r')\s*=\s*\d+\.\d+', content)
+            match = re.search(rf'{re.escape(varname)}\s*=\s*(\d+\.?\d*)', content)
             if match is not None:
-                return float(match[0].split("=")[-1].strip())
+                return float(match.group(1))
         elif vartype == int:
-            match = re.search(r'(?<=' + varname + r')\s*=\s*\d+', content)
-            return int(match[0].split("=")[-1].strip())
+            # First try to match a list of integers [1, 2, 3, ...]
+            list_match = re.search(rf'{re.escape(varname)}\s*=\s*\[([^\]]+)\]', content)
+            if list_match is not None:
+                # Extract the list content and parse the integers
+                list_content = list_match.group(1)
+                # Split by comma and convert to integers
+                numbers = [int(x.strip()) for x in list_content.split(',') if x.strip()]
+                return sum(numbers)
+            
+            # If no list found, try to match a single integer
+            match = re.search(rf'{re.escape(varname)}\s*=\s*(\d+)', content)
+            if match is not None:
+                return int(match.group(1))
         return None
 
     def _cull_shift_reshape(self, vars: List[str], data: np.ndarray, shift: np.ndarray,
@@ -139,6 +150,9 @@ class Data:
             chunksize = count * dsize
         offset = hoffset
         moretoread = True
+        files_found = 0
+        particles_read = 0
+        
         while moretoread:
 
             # Nothing to do if chunk not in chunktask
@@ -154,11 +168,16 @@ class Data:
             # Return if file doesn't exist
             if not os.path.exists(current_file):
                 if format['name'] != "tipsy":
-                    print(f"read step {step:>4}", end='\r')
-                return data
+                    # Only print progress for tipsy format to avoid spam
+                    pass
+                break
+            
+            files_found += 1
 
             # Read particles from file and add those within bounds to data
             cdata = np.fromfile(current_file, dtype=dtype, offset=offset, count=count)
+            particles_read += len(cdata)
+            
             if format['name'] == "tipsy":
                 if cdata.shape[0] == 0:
                     return data
@@ -175,6 +194,9 @@ class Data:
 
             data = self._cull_tile_reshape(data, cdata, vars, bbox, r1, r2, format, lightcone)
 
+        # Only print final summary to avoid multiprocessing spam
+        if chunktask <= 0:  # Only print from main process or when chunktask is -1
+            print(f"Step {step}: Found {files_found} files, read {particles_read} particles, final data shape: {data.shape}")
         return data
 
     def fetch_data(self, bbox: List[List[float]], dataset: str = 'xvp', filetype: str = 'lcp',
@@ -184,12 +206,21 @@ class Data:
         format = pkds.fileformats[filetype]
         vars = dprops['vars']
         print("fetching data")
+        print(f"Dataset: {dataset}, Filetype: {filetype}, Lightcone: {lightcone}")
+        print(f"Variables: {vars}")
+        print(f"Bounding box: {bbox}")
 
         data = None
         if lightcone:
-            args = [[step, bbox, dprops, format, lightcone, 0, -1] for step in range(1, self.params['nsteps'] + 1)]
-            data = np.asarray([np.rec.fromarrays(np.concatenate(mp.Pool(processes=self.nproc).starmap(self._read_step, args), axis=1).reshape((len(vars), -1)),
-                                                 names=vars)])
+            # Use the actual number of output steps from zvals instead of nsteps
+            # Note: step starts from 1 since we need zvals[step-1] for z2
+            max_step = len(self.params['zoutput']) - 1  # -1 because step can go up to max_step (0-indexed)
+            print(f"Processing {max_step} steps from 1 to {max_step}")
+            args = [[step, bbox, dprops, format, lightcone, 0, -1] for step in range(1, max_step + 1)]
+            result = mp.Pool(processes=self.nproc).starmap(self._read_step, args)
+            concatenated = np.concatenate(result, axis=1)
+            print(f"Concatenated data shape: {concatenated.shape}")
+            data = np.asarray([np.rec.fromarrays(concatenated.reshape((len(vars), -1)), names=vars)])
         else:
             data = {}
             zout = []
@@ -207,7 +238,12 @@ class Data:
             self.zout = np.asarray(zout)
             self.nout = i
 
-        print("\ndata fetched")
+        if lightcone:
+            print(f"\ndata fetched, final shape: {data.shape}")
+        else:
+            print(f"\ndata fetched, {len(data)} boxes")
+            for key, value in data.items():
+                print(f"  {key}: shape {value.shape}")
         return data
 
     def matter_power(self, bbox: List[List[float]], **kwargs) -> np.ndarray:
