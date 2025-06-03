@@ -191,6 +191,9 @@ def get_default_simulation_parameters(sim_preset_name: str = DEFAULT_SIMULATION_
     if sim_preset_name in SIMULATION_PRESETS:
         preset_overrides = SIMULATION_PRESETS[sim_preset_name]
         for key, value in preset_overrides.items():
+            # Skip documentation fields that are not actual simulation parameters
+            if key in ['comment', 'description']:
+                continue
             if key in base_params:
                 base_params[key] = value
             else:
