@@ -209,6 +209,14 @@ class Campaign:
         self.log_dir = self.output_dir / "logs"
         self.log_dir.mkdir(exist_ok=True)
         
+        # Copy the original configuration file to campaign directory if it exists
+        if self.config_file:
+            import shutil
+            config_source = Path(self.config_file)
+            config_dest = self.output_dir / config_source.name
+            if config_source.exists() and not config_dest.exists():
+                shutil.copy2(config_source, config_dest)
+        
         # Load existing state if available
         self._load_state()
     
@@ -225,9 +233,10 @@ class Campaign:
             # Apply variant-specific custom parameters (highest priority)
             params.update(variant.custom_params)
             
-            # Set cosmology and simulation name
+            # Set cosmology, simulation preset, and variant identifier
             params['cosmo'] = variant.cosmology
-            params['simname'] = variant.name
+            params['simname'] = variant.resolution  # Use the resolution preset name
+            params['variant_name'] = variant.name
             
             # Configure output directories
             if self.config.output_dir:
@@ -496,62 +505,165 @@ class Campaign:
             report.append(row)
         
         return "\n".join(report)
-    
+
+    def generate_markdown_summary(self) -> str:
+        """Generate a markdown summary report of campaign status."""
+        from datetime import datetime
+        
+        summary = self.get_summary()
+        
+        # Header
+        md = []
+        md.append(f"# {self.config.name}")
+        md.append("")
+        md.append(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        md.append("")
+        
+        # Description
+        if self.config.description:
+            md.append("## Description")
+            md.append("")
+            md.append(self.config.description.strip())
+            md.append("")
+        
+        # Summary statistics
+        md.append("## Campaign Status")
+        md.append("")
+        md.append(f"- **Status:** {summary['status']}")
+        md.append(f"- **Progress:** {summary['completed']}/{summary['total_variants']} "
+                 f"({summary['completion_rate']:.1%})")
+        
+        if hasattr(self.config, 'global_deadline') and self.config.global_deadline:
+            md.append(f"- **Global Deadline:** {self.config.global_deadline}")
+        
+        md.append("")
+        
+        # Progress bar visualization
+        completed_bars = int(20 * summary['completion_rate'])
+        remaining_bars = 20 - completed_bars
+        progress_bar = "█" * completed_bars + "░" * remaining_bars
+        md.append(f"**Progress:** `{progress_bar}` {summary['completion_rate']:.1%}")
+        md.append("")
+        
+        # Status breakdown
+        md.append("### Status Breakdown")
+        md.append("")
+        md.append("| Status | Count |")
+        md.append("|--------|--------|")
+        md.append(f"| ✅ Completed | {summary['completed']} |")
+        md.append(f"| 🏃 Running | {summary['running']} |")
+        md.append(f"| ⏳ Queued | {summary['queued']} |")
+        md.append(f"| 📋 Not Submitted | {summary['not_submitted']} |")
+        md.append(f"| ❌ Failed | {summary['failed']} |")
+        md.append(f"| 🚫 Cancelled | {summary['cancelled']} |")
+        md.append("")
+        
+        # Individual variants
+        md.append("## Simulation Variants")
+        md.append("")
+        md.append("| Name | Cosmology | Resolution | Status | Priority | Job ID |")
+        md.append("|------|-----------|------------|--------|----------|--------|")
+        
+        for variant in sorted(self.config.variants, key=lambda v: -v.priority):
+            status = self.simulation_status.get(variant.name, SimulationStatus.NOT_SUBMITTED)
+            job_id = self.job_ids.get(variant.name, "N/A")
+            
+            # Status icons
+            status_icons = {
+                SimulationStatus.COMPLETED: "✅",
+                SimulationStatus.RUNNING: "🏃",
+                SimulationStatus.QUEUED: "⏳",
+                SimulationStatus.NOT_SUBMITTED: "📋",
+                SimulationStatus.FAILED: "❌",
+                SimulationStatus.CANCELLED: "🚫"
+            }
+            
+            status_icon = status_icons.get(status, "❓")
+            status_text = f"{status_icon} {status.value}"
+            
+            md.append(f"| `{variant.name}` | `{variant.cosmology}` | `{variant.resolution}` | "
+                     f"{status_text} | {variant.priority} | `{job_id}` |")
+        
+        md.append("")
+        
+        # Dependencies (if any)
+        variants_with_deps = [v for v in self.config.variants if v.dependencies]
+        if variants_with_deps:
+            md.append("## Dependencies")
+            md.append("")
+            for variant in variants_with_deps:
+                deps_str = ", ".join([f"`{dep}`" for dep in variant.dependencies])
+                md.append(f"- **{variant.name}** depends on: {deps_str}")
+            md.append("")
+        
+        # Configuration summary
+        md.append("## Configuration")
+        md.append("")
+        md.append(f"- **Total Variants:** {len(self.config.variants)}")
+        if hasattr(self.config, 'max_concurrent_jobs'):
+            md.append(f"- **Max Concurrent Jobs:** {self.config.max_concurrent_jobs}")
+        if hasattr(self.config, 'output_dir'):
+            md.append(f"- **Output Directory:** `{self.config.output_dir}`")
+        if hasattr(self.config, 'scratch_dir'):
+            md.append(f"- **Scratch Directory:** `{self.config.scratch_dir}`")
+        
+        md.append("")
+        md.append("---")
+        md.append("*Generated by pkdpipe campaign management system*")
+        
+        return "\n".join(md)
+
     def list_variants(self, status_filter: Optional[SimulationStatus] = None) -> List[SimulationVariant]:
-        """
-        List campaign variants, optionally filtered by status.
+        """List variants, optionally filtered by status.
         
         Args:
-            status_filter: Optional status to filter by
-        
+            status_filter: If provided, only return variants with this status
+            
         Returns:
-            List of variants matching filter
+            List of SimulationVariant objects matching the filter
         """
-        variants = []
+        if status_filter is None:
+            return self.config.variants
+        
+        filtered_variants = []
         for variant in self.config.variants:
-            if status_filter is None:
-                variants.append(variant)
-            else:
-                current_status = self.simulation_status.get(variant.name, SimulationStatus.NOT_SUBMITTED)
-                if current_status == status_filter:
-                    variants.append(variant)
+            current_status = self.simulation_status.get(variant.name, SimulationStatus.NOT_SUBMITTED)
+            if current_status == status_filter:
+                filtered_variants.append(variant)
         
-        return sorted(variants, key=lambda v: -v.priority)
-    
+        return filtered_variants
+
     def cancel_variant(self, variant_name: str) -> bool:
-        """
-        Cancel a submitted variant.
+        """Cancel a running or queued simulation variant.
         
         Args:
-            variant_name: Name of variant to cancel
-        
+            variant_name: Name of the variant to cancel
+            
         Returns:
-            True if cancellation successful
+            True if cancellation was successful, False otherwise
         """
-        if variant_name not in self.job_ids:
-            print(f"No job ID found for variant '{variant_name}'")
-            return False
+        if variant_name not in [v.name for v in self.config.variants]:
+            raise ValueError(f"Unknown variant: {variant_name}")
         
-        job_id = self.job_ids[variant_name]
-        if not job_id or job_id == "N/A":
-            print(f"Invalid job ID for variant '{variant_name}'")
+        job_id = self.job_ids.get(variant_name)
+        if not job_id:
+            print(f"Warning: No job ID found for variant {variant_name}")
             return False
         
         try:
             result = subprocess.run(
                 ["scancel", job_id],
-                capture_output=True, text=True, timeout=10
+                capture_output=True,
+                text=True,
+                check=True
             )
             
-            if result.returncode == 0:
-                self.simulation_status[variant_name] = SimulationStatus.CANCELLED
-                print(f"Successfully cancelled variant '{variant_name}' (job {job_id})")
-                self._save_state()
-                return True
-            else:
-                print(f"Failed to cancel job {job_id}: {result.stderr}")
-                return False
-                
-        except (subprocess.TimeoutExpired, subprocess.SubprocessError) as e:
-            print(f"Error cancelling job {job_id}: {e}")
+            self.simulation_status[variant_name] = SimulationStatus.CANCELLED
+            self._save_state()
+            
+            print(f"Successfully cancelled variant {variant_name} (job {job_id})")
+            return True
+            
+        except subprocess.CalledProcessError as e:
+            print(f"Error: Failed to cancel variant {variant_name}: {e}")
             return False

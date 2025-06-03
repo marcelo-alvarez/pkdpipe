@@ -85,8 +85,8 @@ SIMULATION_PRESETS = {
         "nodes": 16,
     },
     
-    # Campaign-specific presets for flagship multi-cosmology campaigns
-    "flagship-validation": {
+    # Campaign-specific presets for summer multi-cosmology campaigns
+    "summer-validation": {
         "dBoxSize": 1050,
         "nGrid": 1400,
         "nodes": 50,
@@ -94,21 +94,29 @@ SIMULATION_PRESETS = {
         "tlimit": "12:00:00",
         "comment": "Validation resolution for campaign testing",
     },
-    "flagship-production": {
+    "summer-production": {
         "dBoxSize": 5250,
         "nGrid": 7000,
         "nodes": 250,
         "gpupern": 4,
         "tlimit": "48:00:00",
-        "comment": "Full flagship resolution for production simulations",
+        "comment": "Full summer resolution for production simulations",
     },
-    "flagship-scaling": {
+    "summer-scaling-2800": {
         "dBoxSize": 2100,
         "nGrid": 2800,
         "nodes": 64,
         "gpupern": 4,
         "tlimit": "24:00:00",
-        "comment": "Intermediate scaling tests",
+        "comment": "LCDM scaling test with 2800³ grid",
+    },
+    "summer-scaling-4200": {
+        "dBoxSize": 3150,
+        "nGrid": 4200,
+        "nodes": 144,
+        "gpupern": 4,
+        "tlimit": "36:00:00",
+        "comment": "LCDM scaling test with 4200³ grid",
     },
 }
 
@@ -207,64 +215,53 @@ COSMOLOGY_PRESETS = {
     },
 }
 
-# Add flagship campaign cosmology variants
+# Add summer campaign cosmology variants based on desi-dr2-planck-act-mnufree
+# These inherit from the base preset and only override specific parameters
+_base_summer_cosmology = COSMOLOGY_PRESETS["desi-dr2-planck-act-mnufree"].copy()
+
+COSMOLOGY_PRESETS.update({
+    "summer-lcdm": {
+        **_base_summer_cosmology,
+        "description": "Summer campaign LCDM cosmology based on DESI-DR2-Planck-ACT"
+    },
+    "summer-wcdm": {
+        **_base_summer_cosmology,
+        # Dark energy equation of state parameters (only parameters that differ)
+        "w0": -0.9,  # Different from LCDM for comparison
+        "wa": 0.1,   # Time-varying component
+        "description": "Summer campaign wCDM cosmology with evolving dark energy"
+    },
+    "summer-phicdm": {
+        **_base_summer_cosmology,
+        # Scalar field parameters (only parameters that differ)
+        "phi_model": "quintessence",
+        "phi_params": {
+            "potential": "exponential",
+            "lambda_phi": 0.1
+        },
+        "description": "Summer campaign phiCDM cosmology with scalar field dark energy"
+    },
+})
+
+# Add flagship campaign cosmology variants based on Planck 2018
+# These inherit from the planck18 preset and only override specific parameters
+_base_flagship_cosmology = COSMOLOGY_PRESETS["planck18"].copy()
+
 COSMOLOGY_PRESETS.update({
     "flagship-lcdm": {
-        # Based on Planck 2018 TT,TE,EE+lowE+lensing+BAO
-        "h": 67.36 / 100,
-        "ombh2": 0.02237,
-        "omch2": 0.1200,
-        "As": 2.100e-09,
-        "ns": 0.9649,
-        "TCMB": 2.72548,
-        "omegak": 0.0,
-        "sigma8": None, # CAMB will calculate this
-        "mnu": 0.06, # Sum of neutrino masses in eV
-        "nnu": 3.046,
-        "tau": 0.0544,
-        "numnu": 3,
-        "harchy": "normal",
-        "k0phys": 0.05,
+        **_base_flagship_cosmology,
         "description": "Flagship LCDM cosmology based on Planck 2018"
     },
     "flagship-wcdm": {
-        # wCDM variant for flagship campaign
-        "h": 67.36 / 100,
-        "ombh2": 0.02237,
-        "omch2": 0.1200,
-        "As": 2.100e-09,
-        "ns": 0.9649,
-        "TCMB": 2.72548,
-        "omegak": 0.0,
-        "sigma8": None,
-        "mnu": 0.06,
-        "nnu": 3.046,
-        "tau": 0.0544,
-        "numnu": 3,
-        "harchy": "normal",
-        "k0phys": 0.05,
-        # Dark energy equation of state parameters
+        **_base_flagship_cosmology,
+        # Dark energy equation of state parameters (only parameters that differ)
         "w0": -0.9,  # Slightly different from LCDM for flagship comparison
         "wa": 0.1,   # Time-varying component
         "description": "Flagship wCDM cosmology with evolving dark energy"
     },
     "flagship-phicdm": {
-        # phiCDM variant for flagship campaign
-        "h": 67.36 / 100,
-        "ombh2": 0.02237,
-        "omch2": 0.1200,
-        "As": 2.100e-09,
-        "ns": 0.9649,
-        "TCMB": 2.72548,
-        "omegak": 0.0,
-        "sigma8": None,
-        "mnu": 0.06,
-        "nnu": 3.046,
-        "tau": 0.0544,
-        "numnu": 3,
-        "harchy": "normal",
-        "k0phys": 0.05,
-        # Scalar field parameters
+        **_base_flagship_cosmology,
+        # Scalar field parameters (only parameters that differ)
         "phi_model": "quintessence",
         "phi_params": {
             "potential": "exponential",
