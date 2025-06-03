@@ -84,6 +84,40 @@ SIMULATION_PRESETS = {
         "nGrid": 2800,
         "nodes": 16,
     },
+    
+    # Campaign-specific presets for summer multi-cosmology campaigns
+    "summer-validation": {
+        "dBoxSize": 1050,
+        "nGrid": 1400,
+        "nodes": 50,
+        "gpupern": 4,
+        "tlimit": "12:00:00",
+        "comment": "Validation resolution for campaign testing",
+    },
+    "summer-production": {
+        "dBoxSize": 5250,
+        "nGrid": 7000,
+        "nodes": 250,
+        "gpupern": 4,
+        "tlimit": "48:00:00",
+        "comment": "Full summer resolution for production simulations",
+    },
+    "summer-scaling-2800": {
+        "dBoxSize": 2100,
+        "nGrid": 2800,
+        "nodes": 64,
+        "gpupern": 4,
+        "tlimit": "24:00:00",
+        "comment": "LCDM scaling test with 2800³ grid",
+    },
+    "summer-scaling-4200": {
+        "dBoxSize": 3150,
+        "nGrid": 4200,
+        "nodes": 144,
+        "gpupern": 4,
+        "tlimit": "36:00:00",
+        "comment": "LCDM scaling test with 4200³ grid",
+    },
 }
 
 # --- Cosmology Presets ---
@@ -122,6 +156,150 @@ COSMOLOGY_PRESETS = {
         "numnu": 1, # Typically for Euclid flagship mnu is one massive eigenstate
         "harchy": "normal", # Or degenerate, depending on interpretation
         "k0phys": 0.05,
+    },
+    "planck18": {
+        "h": 67.36 / 100,
+        "ombh2": 0.02237,
+        "omch2": 0.1200,
+        "As": 2.100e-09,
+        "ns": 0.9649,
+        "TCMB": 2.72548,
+        "omegak": 0.0,
+        "sigma8": None, # CAMB will calculate this
+        "mnu": 0.06, # Sum of neutrino masses in eV
+        "nnu": 3.046,
+        "tau": 0.0544,
+        "numnu": 3,
+        "harchy": "normal",
+        "k0phys": 0.05,
+    },
+    "wCDM_w0wa": {
+        # Base LCDM with w0-wa parameterization
+        "h": 0.67,
+        "omegam": 0.32,
+        "omegab": 0.049,
+        "sigma8": 0.83,
+        "As": 2.1e-9,
+        "ns": 0.96,
+        "mnu": 0.0,
+        "TCMB": 2.72548,
+        "omegak": 0.0,
+        "nnu": 3.044,
+        "tau": 0.0543,
+        "numnu": 0,
+        "harchy": "normal",
+        "k0phys": 0.05,
+        # Dark energy equation of state parameters
+        "w0": -1.0,
+        "wa": 0.0,
+    },
+    "phiCDM_base": {
+        # Base configuration for scalar field dark energy
+        "h": 0.67,
+        "omegam": 0.32,
+        "omegab": 0.049,
+        "sigma8": 0.83,
+        "As": 2.1e-9,
+        "ns": 0.96,
+        "mnu": 0.0,
+        "TCMB": 2.72548,
+        "omegak": 0.0,
+        "nnu": 3.044,
+        "tau": 0.0543,
+        "numnu": 0,
+        "harchy": "normal",
+        "k0phys": 0.05,
+        # Scalar field parameters (to be customized per variant)
+        "phi_model": "quintessence",
+        "phi_params": {},
+    },
+}
+
+# Add summer campaign cosmology variants based on desi-dr2-planck-act-mnufree
+# These inherit from the base preset and only override specific parameters
+_base_summer_cosmology = COSMOLOGY_PRESETS["desi-dr2-planck-act-mnufree"].copy()
+
+COSMOLOGY_PRESETS.update({
+    "summer-lcdm": {
+        **_base_summer_cosmology,
+        "description": "Summer campaign LCDM cosmology based on DESI-DR2-Planck-ACT"
+    },
+    "summer-wcdm": {
+        **_base_summer_cosmology,
+        # Dark energy equation of state parameters (only parameters that differ)
+        "w0": -0.9,  # Different from LCDM for comparison
+        "wa": 0.1,   # Time-varying component
+        "description": "Summer campaign wCDM cosmology with evolving dark energy"
+    },
+    "summer-phicdm": {
+        **_base_summer_cosmology,
+        # Scalar field parameters (only parameters that differ)
+        "phi_model": "quintessence",
+        "phi_params": {
+            "potential": "exponential",
+            "lambda_phi": 0.1
+        },
+        "description": "Summer campaign phiCDM cosmology with scalar field dark energy"
+    },
+})
+
+# Add flagship campaign cosmology variants based on Planck 2018
+# These inherit from the planck18 preset and only override specific parameters
+_base_flagship_cosmology = COSMOLOGY_PRESETS["planck18"].copy()
+
+COSMOLOGY_PRESETS.update({
+    "flagship-lcdm": {
+        **_base_flagship_cosmology,
+        "description": "Flagship LCDM cosmology based on Planck 2018"
+    },
+    "flagship-wcdm": {
+        **_base_flagship_cosmology,
+        # Dark energy equation of state parameters (only parameters that differ)
+        "w0": -0.9,  # Slightly different from LCDM for flagship comparison
+        "wa": 0.1,   # Time-varying component
+        "description": "Flagship wCDM cosmology with evolving dark energy"
+    },
+    "flagship-phicdm": {
+        **_base_flagship_cosmology,
+        # Scalar field parameters (only parameters that differ)
+        "phi_model": "quintessence",
+        "phi_params": {
+            "potential": "exponential",
+            "lambda_phi": 0.1
+        },
+        "description": "Flagship phiCDM cosmology with scalar field dark energy"
+    },
+})
+
+# --- Campaign-Specific Presets ---
+# Additional preset configurations for campaign management
+CAMPAIGN_PRESETS = {
+    "validation": {
+        # Quick validation runs with small box sizes and low resolution
+        "dBoxSize": 100,
+        "nGrid": 128,
+        "nodes": 1,
+        "timelimit": "02:00:00",
+        "redshift_targets": "[3.0, 1.0, 0.0]",
+        "nSteps": "[1, 1, 1]",
+    },
+    "flagship": {
+        # High-resolution flagship simulation parameters
+        "dBoxSize": 2100,
+        "nGrid": 4096,
+        "nodes": 64,
+        "timelimit": "48:00:00",
+        "gpupern": 4,
+    },
+    "S0_campaign": {
+        # Specific parameters for the S0 campaign with July 1, 2025 deadline
+        "dBoxSize": 1050,
+        "nGrid": 2048,
+        "nodes": 32,
+        "timelimit": "36:00:00",
+        "gpupern": 4,
+        "email": PKDGRAVEMAIL,
+        "account": "cosmos",
     },
 }
 
