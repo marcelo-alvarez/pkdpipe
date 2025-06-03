@@ -217,6 +217,47 @@ def list_campaigns(args) -> int:
         return 1
 
 
+def summary_campaign(args) -> int:
+    """Generate markdown summary for campaign."""
+    try:
+        campaign_dir = Path(args.campaign_dir)
+        if not campaign_dir.exists():
+            print(f"Error: Campaign directory not found: {campaign_dir}")
+            return 1
+        
+        # Find the original config file
+        config_files = list(campaign_dir.glob("*.yaml")) + list(campaign_dir.glob("*.yml"))
+        if not config_files:
+            print(f"Error: No YAML configuration file found in {campaign_dir}")
+            return 1
+        
+        config_file = config_files[0]
+        campaign = Campaign(str(config_file))
+        
+        # Update status from SLURM unless requested not to
+        if not args.no_update:
+            print("Updating status from SLURM...")
+            campaign.update_status()
+        
+        # Generate markdown summary
+        markdown_summary = campaign.generate_markdown_summary()
+        
+        if args.output:
+            # Write to file
+            output_file = Path(args.output)
+            output_file.write_text(markdown_summary)
+            print(f"✓ Markdown summary written to: {output_file}")
+        else:
+            # Print to stdout
+            print(markdown_summary)
+        
+        return 0
+        
+    except Exception as e:
+        print(f"Error generating campaign summary: {e}")
+        return 1
+
+
 def main():
     """Main entry point for campaign CLI commands."""
     parser = argparse.ArgumentParser(
@@ -253,6 +294,13 @@ def main():
     list_parser = subparsers.add_parser('list', help='List available campaigns')
     list_parser.add_argument('--search-dir', help='Additional directory to search for campaigns')
     
+    # Summary command
+    summary_parser = subparsers.add_parser('summary', help='Generate markdown summary for campaign')
+    summary_parser.add_argument('campaign_dir', help='Path to campaign directory')
+    summary_parser.add_argument('--no-update', action='store_true',
+                              help='Do not update status from SLURM')
+    summary_parser.add_argument('--output', help='Output file for markdown summary')
+    
     # Parse arguments
     args = parser.parse_args()
     
@@ -269,6 +317,8 @@ def main():
         return status_campaign(args)
     elif args.command == 'list':
         return list_campaigns(args)
+    elif args.command == 'summary':
+        return summary_campaign(args)
     else:
         print(f"Unknown command: {args.command}")
         return 1

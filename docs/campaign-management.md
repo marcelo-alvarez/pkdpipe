@@ -40,8 +40,8 @@ scratch_dir: "/path/to/scratch"
 # Simulation variants
 variants:
   - name: "lcdm-validation"
-    cosmology: "flagship-lcdm"
-    resolution: "flagship-validation"
+    cosmology: "summer-lcdm"
+    resolution: "summer-validation"
     priority: 100
     dependencies: []
     submission_deadline: "2025-06-10T23:59:59"
@@ -52,18 +52,19 @@ variants:
 
 ### Available Cosmology Presets
 
-- **flagship-lcdm**: LCDM cosmology based on Planck 2018
-- **flagship-wcdm**: wCDM with evolving dark energy (w0=-0.9, wa=0.1)
-- **flagship-phicdm**: phiCDM with scalar field dark energy
+- **summer-lcdm**: LCDM cosmology based on DESI DR2 Planck ACT
+- **summer-wcdm**: wCDM with evolving dark energy (w0=-0.9, wa=0.1)
+- **summer-phicdm**: phiCDM with scalar field dark energy
 - **desi-dr2-planck-act-mnufree**: DESI DR2 cosmology
 - **euclid-flagship**: Euclid flagship cosmology
 - **planck18**: Planck 2018 cosmology
 
 ### Available Simulation Presets
 
-- **flagship-validation**: 1050 Mpc/h box, 1400³ grid, 50 nodes, 12h
-- **flagship-production**: 5250 Mpc/h box, 7000³ grid, 250 nodes, 48h
-- **flagship-scaling**: 2100 Mpc/h box, 2800³ grid, 64 nodes, 24h
+- **summer-validation**: 1050 Mpc/h box, 1400³ grid, 50 nodes, 12h
+- **summer-production**: 5250 Mpc/h box, 7000³ grid, 250 nodes, 48h
+- **summer-scaling-2800**: 2100 Mpc/h box, 2800³ grid, 64 nodes, 24h
+- **summer-scaling-4200**: 3150 Mpc/h box, 4200³ grid, 128 nodes, 36h
 - **lcone-small**: 525 Mpc/h box, 700³ grid, 1 node
 - **lcone-medium**: 1050 Mpc/h box, 1400³ grid, 2 nodes
 - **lcone-large**: 2100 Mpc/h box, 2800³ grid, 16 nodes
@@ -129,6 +130,19 @@ pkdpipe-campaign list
 pkdpipe-campaign list --search-dir /path/to/campaigns
 ```
 
+#### Generate markdown summary
+
+```bash
+# Generate markdown summary to stdout
+pkdpipe-campaign summary /path/to/campaign/dir
+
+# Generate markdown summary to file
+pkdpipe-campaign summary /path/to/campaign/dir --output campaign-report.md
+
+# Generate summary without updating from SLURM
+pkdpipe-campaign summary /path/to/campaign/dir --no-update --output report.md
+```
+
 ## Python API
 
 ### Basic Usage
@@ -164,14 +178,14 @@ from pkdpipe.campaign import CampaignConfig, SimulationVariant
 variants = [
     SimulationVariant(
         name="lcdm-test",
-        cosmology="flagship-lcdm",
-        resolution="flagship-validation",
+        cosmology="summer-lcdm",
+        resolution="summer-validation",
         priority=100
     ),
     SimulationVariant(
         name="wcdm-test",
-        cosmology="flagship-wcdm", 
-        resolution="flagship-validation",
+        cosmology="summer-wcdm", 
+        resolution="summer-validation",
         priority=90,
         dependencies=["lcdm-test"]
     )
