@@ -33,35 +33,35 @@ class TestSimulationVariant:
         """Test creating a valid simulation variant."""
         variant = SimulationVariant(
             name="test-variant",
-            cosmology="flagship-lcdm",
-            resolution="flagship-validation",
+            cosmology="summer-lcdm",
+            resolution="summer-validation",
             priority=75,
             dependencies=["other-variant"],
             custom_params={"nGrid": 1000}
         )
         
         assert variant.name == "test-variant"
-        assert variant.cosmology == "flagship-lcdm"
-        assert variant.resolution == "flagship-validation"
+        assert variant.cosmology == "summer-lcdm"
+        assert variant.resolution == "summer-validation"
         assert variant.priority == 75
         assert "other-variant" in variant.dependencies
         assert variant.custom_params["nGrid"] == 1000
     
     def test_invalid_cosmology_raises_error(self):
-        """Test that invalid cosmology preset raises ValueError."""
+        """Test that invalid cosmology raises ValueError."""
         with pytest.raises(ValueError, match="Unknown cosmology preset"):
             SimulationVariant(
                 name="test-variant",
                 cosmology="nonexistent-cosmology",
-                resolution="flagship-validation"
+                resolution="summer-validation"
             )
     
     def test_invalid_resolution_raises_error(self):
-        """Test that invalid resolution preset raises ValueError."""
+        """Test that invalid resolution raises ValueError."""
         with pytest.raises(ValueError, match="Unknown simulation preset"):
             SimulationVariant(
                 name="test-variant",
-                cosmology="flagship-lcdm",
+                cosmology="summer-lcdm",
                 resolution="nonexistent-resolution"
             )
 
@@ -73,8 +73,8 @@ class TestCampaignConfig:
         """Helper to create a test variant."""
         return SimulationVariant(
             name=name,
-            cosmology="flagship-lcdm", 
-            resolution="flagship-validation"
+            cosmology="summer-lcdm", 
+            resolution="summer-validation"
         )
     
     def test_valid_config_creation(self):
@@ -123,8 +123,8 @@ class TestCampaignConfig:
             'variants': [
                 {
                     'name': 'test-variant',
-                    'cosmology': 'flagship-lcdm',
-                    'resolution': 'flagship-validation',
+                    'cosmology': 'summer-lcdm',
+                    'resolution': 'summer-validation',
                     'priority': 80,
                     'custom_params': {'nGrid': 500}
                 }
@@ -160,14 +160,14 @@ class TestCampaign:
         variants = [
             SimulationVariant(
                 name="variant1",
-                cosmology="flagship-lcdm",
-                resolution="flagship-validation",
+                cosmology="summer-lcdm",
+                resolution="summer-validation",
                 priority=80
             ),
             SimulationVariant(
                 name="variant2", 
-                cosmology="flagship-wcdm",
-                resolution="flagship-validation",
+                cosmology="summer-wcdm",
+                resolution="summer-validation",
                 priority=60,
                 dependencies=["variant1"]
             )
@@ -331,8 +331,8 @@ class TestCampaignCLI:
             'variants': [
                 {
                     'name': 'cli-test-variant',
-                    'cosmology': 'flagship-lcdm',
-                    'resolution': 'flagship-validation',
+                    'cosmology': 'summer-lcdm',
+                    'resolution': 'summer-validation',
                     'priority': 80
                 }
             ]
@@ -386,12 +386,12 @@ class TestCampaignCLI:
 
 
 class TestCosmologyPresets:
-    """Test the new cosmology presets for flagship campaign."""
+    """Test the cosmology presets for summer campaign."""
     
-    def test_flagship_lcdm_preset_exists(self):
-        """Test that flagship-lcdm preset is properly defined."""
-        assert "flagship-lcdm" in COSMOLOGY_PRESETS
-        lcdm = COSMOLOGY_PRESETS["flagship-lcdm"]
+    def test_summer_lcdm_preset_exists(self):
+        """Test that summer-lcdm preset is properly defined."""
+        assert "summer-lcdm" in COSMOLOGY_PRESETS
+        lcdm = COSMOLOGY_PRESETS["summer-lcdm"]
         
         # Check key parameters
         assert "h" in lcdm
@@ -399,12 +399,12 @@ class TestCosmologyPresets:
         assert "omch2" in lcdm
         assert "As" in lcdm
         assert "ns" in lcdm
-        assert lcdm["description"] == "Flagship LCDM cosmology based on Planck 2018"
+        assert lcdm["description"] == "Summer campaign LCDM cosmology based on DESI-DR2-Planck-ACT"
     
-    def test_flagship_wcdm_preset_exists(self):
-        """Test that flagship-wcdm preset is properly defined."""
-        assert "flagship-wcdm" in COSMOLOGY_PRESETS
-        wcdm = COSMOLOGY_PRESETS["flagship-wcdm"]
+    def test_summer_wcdm_preset_exists(self):
+        """Test that summer-wcdm preset is properly defined."""
+        assert "summer-wcdm" in COSMOLOGY_PRESETS
+        wcdm = COSMOLOGY_PRESETS["summer-wcdm"]
         
         # Check wCDM-specific parameters
         assert "w0" in wcdm
@@ -413,10 +413,10 @@ class TestCosmologyPresets:
         assert wcdm["wa"] == 0.1
         assert "evolving dark energy" in wcdm["description"]
     
-    def test_flagship_phicdm_preset_exists(self):
-        """Test that flagship-phicdm preset is properly defined."""
-        assert "flagship-phicdm" in COSMOLOGY_PRESETS
-        phicdm = COSMOLOGY_PRESETS["flagship-phicdm"]
+    def test_summer_phicdm_preset_exists(self):
+        """Test that summer-phicdm preset is properly defined."""
+        assert "summer-phicdm" in COSMOLOGY_PRESETS
+        phicdm = COSMOLOGY_PRESETS["summer-phicdm"]
         
         # Check phiCDM-specific parameters
         assert "phi_model" in phicdm
@@ -427,12 +427,12 @@ class TestCosmologyPresets:
 
 
 class TestSimulationPresets:
-    """Test the new simulation presets for flagship campaign."""
+    """Test the simulation presets for summer campaign."""
     
-    def test_flagship_validation_preset_exists(self):
-        """Test that flagship-validation preset is properly defined."""
-        assert "flagship-validation" in SIMULATION_PRESETS
-        validation = SIMULATION_PRESETS["flagship-validation"]
+    def test_summer_validation_preset_exists(self):
+        """Test that summer-validation preset is properly defined."""
+        assert "summer-validation" in SIMULATION_PRESETS
+        validation = SIMULATION_PRESETS["summer-validation"]
         
         assert validation["dBoxSize"] == 1050
         assert validation["nGrid"] == 1400
@@ -440,10 +440,10 @@ class TestSimulationPresets:
         assert validation["gpupern"] == 4
         assert validation["tlimit"] == "12:00:00"
     
-    def test_flagship_production_preset_exists(self):
-        """Test that flagship-production preset is properly defined."""
-        assert "flagship-production" in SIMULATION_PRESETS
-        production = SIMULATION_PRESETS["flagship-production"]
+    def test_summer_production_preset_exists(self):
+        """Test that summer-production preset is properly defined."""
+        assert "summer-production" in SIMULATION_PRESETS
+        production = SIMULATION_PRESETS["summer-production"]
         
         assert production["dBoxSize"] == 5250
         assert production["nGrid"] == 7000
@@ -451,10 +451,10 @@ class TestSimulationPresets:
         assert production["gpupern"] == 4
         assert production["tlimit"] == "48:00:00"
     
-    def test_flagship_scaling_preset_exists(self):
-        """Test that flagship-scaling preset is properly defined."""
-        assert "flagship-scaling" in SIMULATION_PRESETS
-        scaling = SIMULATION_PRESETS["flagship-scaling"]
+    def test_summer_scaling_preset_exists(self):
+        """Test that summer-scaling-2800 preset is properly defined."""
+        assert "summer-scaling-2800" in SIMULATION_PRESETS
+        scaling = SIMULATION_PRESETS["summer-scaling-2800"]
         
         assert scaling["dBoxSize"] == 2100
         assert scaling["nGrid"] == 2800
