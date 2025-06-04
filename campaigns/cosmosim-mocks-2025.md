@@ -1,7 +1,7 @@
 # Cosmosim Mocks 2025 Campaign
 
 **Campaign ID:** `cosmosim-mocks-2025`  
-**Status:** ⚠️ **CRITICAL DEADLINE: July 1, 2025**  
+**Status:** **DEADLINE: July 1, 2025**  
 **Configuration:** [`cosmosim-mocks-2025.yaml`](./cosmosim-mocks-2025.yaml)
 
 ## Overview
@@ -11,10 +11,8 @@ Multi-cosmology simulation campaign with LCDM, wCDM, and phiCDM models for summe
 ## Campaign Settings
 
 - **Max Concurrent Jobs:** 6 (Conservative limit for Perlmutter GPU partition)
-- **Global Deadline:** July 1, 2025 23:59:59 UTC
+- **Global Deadline:** July 1, 2025
 - **Target System:** NERSC Perlmutter (GPU partition)
-- **Account:** `cosmosim`
-- **Contact:** marcelo.alvarez@stanford.edu
 
 ## Storage Locations
 
@@ -56,24 +54,23 @@ All cosmology presets inherit from `desi-dr2-planck-act-mnufree` baseline parame
 **Purpose:** Parameter and workflow testing with full 39 snapshots (ΛCDM) or 3 snapshots (wCDM, φCDM).
 
 ### Phase 2: Scaling Tests (Priority 89-80)
-**Timeline:** June 20-25, 2025
+**Timeline:** June 20, 2025
 
 | Variant | Cosmology | Resolution | Priority | Deadline | Dependencies |
 |---------|-----------|------------|----------|----------|--------------|
-| `lcdm-scaling-2800` | ΛCDM | 2800³ | 85 | Jun 20 | lcdm-validation |
-| `lcdm-scaling-4200` | ΛCDM | 4200³ | 80 | Jun 25 | lcdm-scaling-2800 |
+| `lcdm-scaling` | ΛCDM | Scaling | 85 | Jun 20 | lcdm-validation |
 
-**Purpose:** Performance scaling validation with full 39 snapshots at intermediate resolutions.
+**Purpose:** Performance scaling validation with full 39 snapshots at intermediate resolution.
 
-### Phase 3: Production Runs (Priority 79-70) ⚠️ **CRITICAL**
+### Phase 3: Production Runs (Priority 79-70) **CRITICAL**
 **Timeline:** June 28 - July 1, 2025
 
 | Variant | Cosmology | Resolution | Priority | Deadline | Dependencies |
 |---------|-----------|------------|----------|----------|--------------|
-| `lcdm-production` | ΛCDM | Production | 79 | Jun 28 | lcdm-scaling-4200 |
+| `lcdm-production` | ΛCDM | Production | 79 | Jun 28 | lcdm-scaling |
 | `wcdm-production` | wCDM | Production | 75 | Jun 30 | lcdm-production |
 
-**Purpose:** **CRITICAL** full production runs that **MUST** be submitted by July 1, 2025 deadline.
+**Purpose:** **CRITICAL** full production runs with 39 snapshots that **MUST** be submitted by July 1, 2025 deadline.
 
 ### Phase 4: Extended Analysis (Priority 69-60)
 **Timeline:** July 5, 2025
@@ -82,7 +79,7 @@ All cosmology presets inherit from `desi-dr2-planck-act-mnufree` baseline parame
 |---------|-----------|------------|----------|----------|--------------|
 | `phicdm-production` | φCDM | Production | 65 | Jul 5 | wcdm-production |
 
-**Purpose:** Lower priority production run, submit only after critical runs are secured.
+**Purpose:** Lower priority production run with 39 snapshots, submit only after critical runs are secured.
 
 ## Dependency Chain
 
@@ -90,21 +87,21 @@ All cosmology presets inherit from `desi-dr2-planck-act-mnufree` baseline parame
 lcdm-validation
 ├── wcdm-validation
 │   └── phicdm-validation
-└── lcdm-scaling-2800
-    └── lcdm-scaling-4200
-        └── lcdm-production
-            └── wcdm-production ⚠️ (CRITICAL)
-                └── phicdm-production
+└── lcdm-scaling
+    └── lcdm-production
+        └── wcdm-production (CRITICAL)
+            └── phicdm-production
 ```
 
 ## Output Snapshots
 
 ### Full 39-Snapshot Runs
 - **Validation:** `lcdm-validation`
-- **Scaling:** `lcdm-scaling-2800`, `lcdm-scaling-4200`
+- **Scaling:** `lcdm-scaling`
 - **Production:** `lcdm-production`, `wcdm-production`, `phicdm-production`
+- **Extended:** `lcdm-highres`
 
-**Redshift Range:** z=3.0 → z=0.0 with additional specific redshifts for analysis.
+**Redshift Range:** z=3.0 → z=0.0 with 39 carefully selected redshifts for comprehensive analysis.
 
 ### Quick 3-Snapshot Runs
 - **Validation:** `wcdm-validation`, `phicdm-validation`
@@ -117,9 +114,9 @@ lcdm-validation
 |------|-----------|----------------|
 | **June 10** | Validation begins | Submit `lcdm-validation` |
 | **June 14** | Validation complete | All validation runs submitted |
-| **June 25** | Scaling complete | `lcdm-scaling-4200` submitted |
-| **June 28** | Production begins | Submit `lcdm-production` ⚠️ |
-| **June 30** | wCDM production | Submit `wcdm-production` ⚠️ |
+| **June 20** | Scaling complete | `lcdm-scaling` submitted |
+| **June 28** | Production begins | Submit `lcdm-production` |
+| **June 30** | wCDM production | Submit `wcdm-production` |
 | **July 1** | **DEADLINE** | **Both production runs MUST be submitted** |
 
 ## Usage
