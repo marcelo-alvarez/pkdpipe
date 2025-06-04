@@ -23,4 +23,3 @@ Homepage = "http://github.com/marcelo-alvarez/pkdpipe"
 
 [project.scripts]
 pkdpipe-create = "pkdpipe.cli:create"
-pkdpipe-campaign = "pkdpipe.campaign_cli:main"
