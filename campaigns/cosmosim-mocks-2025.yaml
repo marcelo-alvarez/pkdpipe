@@ -41,7 +41,7 @@ variants:
   # VALIDATION RUNS (Priority 100-89) - Submit immediately for testing
   - name: "lcdm-validation"
     cosmology: "flagship-lcdm"
-    resolution: "flagship-validation"
+    resolution: "summer-validation"
     priority: 100
     dependencies: []
     submission_deadline: "2025-06-10T23:59:59"
@@ -52,7 +52,7 @@ variants:
       
   - name: "wcdm-validation"
     cosmology: "flagship-wcdm"
-    resolution: "flagship-validation"
+    resolution: "summer-validation"
     priority: 95
     dependencies: ["lcdm-validation"]
     submission_deadline: "2025-06-12T23:59:59"
@@ -63,7 +63,7 @@ variants:
       
   - name: "phicdm-validation"
     cosmology: "flagship-phicdm"
-    resolution: "flagship-validation"
+    resolution: "summer-validation"
     priority: 90
     dependencies: ["wcdm-validation"]
     submission_deadline: "2025-06-14T23:59:59"
@@ -75,7 +75,7 @@ variants:
   # SCALING TESTS (Priority 89-80) - Submit after validation completes
   - name: "lcdm-scaling"
     cosmology: "flagship-lcdm"
-    resolution: "flagship-scaling"
+    resolution: "summer-scaling-2800"
     priority: 85
     dependencies: ["lcdm-validation"]
     submission_deadline: "2025-06-20T23:59:59"
@@ -87,7 +87,7 @@ variants:
   # PRODUCTION RUNS (Priority 79-70) - Critical for July 1 deadline
   - name: "lcdm-production"
     cosmology: "flagship-lcdm"
-    resolution: "flagship-production"
+    resolution: "summer-production"
     priority: 79
     dependencies: ["lcdm-scaling"]
     submission_deadline: "2025-06-28T23:59:59"
@@ -98,7 +98,7 @@ variants:
       
   - name: "wcdm-production"
     cosmology: "flagship-wcdm"
-    resolution: "flagship-production"
+    resolution: "summer-production"
     priority: 75
     dependencies: ["lcdm-production"]
     submission_deadline: "2025-06-30T23:59:59"
@@ -110,7 +110,7 @@ variants:
   # EXTENDED ANALYSIS (Priority 69-60) - Submit after production if resources allow
   - name: "phicdm-production"
     cosmology: "flagship-phicdm"
-    resolution: "flagship-production"
+    resolution: "summer-production"
     priority: 65
     dependencies: ["wcdm-production"]
     submission_deadline: "2025-07-05T23:59:59"
