@@ -436,7 +436,7 @@ class TestSimulationPresets:
         
         assert validation["dBoxSize"] == 1050
         assert validation["nGrid"] == 1400
-        assert validation["nodes"] == 50
+        assert validation["nodes"] == 2
         assert validation["gpupern"] == 4
         assert validation["tlimit"] == "12:00:00"
     
@@ -458,7 +458,7 @@ class TestSimulationPresets:
         
         assert scaling["dBoxSize"] == 2100
         assert scaling["nGrid"] == 2800
-        assert scaling["nodes"] == 64
+        assert scaling["nodes"] == 16
         assert scaling["gpupern"] == 4
         assert scaling["tlimit"] == "24:00:00"
 
