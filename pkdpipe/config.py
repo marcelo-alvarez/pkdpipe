@@ -86,10 +86,11 @@ SIMULATION_PRESETS = {
     },
     
     # Campaign-specific presets for summer multi-cosmology campaigns
+    # Node allocation follows scaling law: N = 2 * (nGrid/1400)^3
     "summer-validation": {
         "dBoxSize": 1050,
         "nGrid": 1400,
-        "nodes": 50,
+        "nodes": 2,  # Updated: 2 * (1400/1400)^3 = 2 * 1 = 2
         "gpupern": 4,
         "tlimit": "12:00:00",
         "comment": "Validation resolution for campaign testing",
@@ -97,7 +98,7 @@ SIMULATION_PRESETS = {
     "summer-production": {
         "dBoxSize": 5250,
         "nGrid": 7000,
-        "nodes": 250,
+        "nodes": 250,  # Correct: 2 * (7000/1400)^3 = 2 * 125 = 250
         "gpupern": 4,
         "tlimit": "48:00:00",
         "comment": "Full summer resolution for production simulations",
@@ -105,7 +106,7 @@ SIMULATION_PRESETS = {
     "summer-scaling-2800": {
         "dBoxSize": 2100,
         "nGrid": 2800,
-        "nodes": 64,
+        "nodes": 16,  # Updated: 2 * (2800/1400)^3 = 2 * 8 = 16
         "gpupern": 4,
         "tlimit": "24:00:00",
         "comment": "LCDM scaling test with 2800³ grid",
@@ -113,7 +114,7 @@ SIMULATION_PRESETS = {
     "summer-scaling-4200": {
         "dBoxSize": 3150,
         "nGrid": 4200,
-        "nodes": 144,
+        "nodes": 54,  # Updated: 2 * (4200/1400)^3 = 2 * 27 = 54
         "gpupern": 4,
         "tlimit": "36:00:00",
         "comment": "LCDM scaling test with 4200³ grid",
@@ -291,4 +292,3 @@ class TemplateError(PkdpipeConfigError):
 class JobSubmissionError(PkdpipeConfigError):
     """Exception raised for errors during job submission."""
     pass
-
