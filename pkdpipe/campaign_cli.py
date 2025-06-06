@@ -60,26 +60,63 @@ def create_campaign(args) -> int:
 def submit_campaign(args) -> int:
     """Submit campaign simulations."""
     try:
-        campaign_dir = Path(args.campaign_dir)
-        if not campaign_dir.exists():
-            print(f"Error: Campaign directory not found: {campaign_dir}")
+        input_path = Path(args.campaign_dir)
+        
+        # Handle both YAML config files and campaign directories
+        if input_path.is_file() and input_path.suffix in ['.yaml', '.yml']:
+            # User provided YAML config file - derive campaign directory
+            config_file = input_path
+            if not config_file.exists():
+                print(f"Error: Configuration file not found: {config_file}")
+                return 1
+            
+            # Load config to get campaign name and determine output directory
+            try:
+                config = CampaignConfig.from_yaml(str(config_file))
+                if config.output_dir:
+                    campaign_dir = Path(config.output_dir)
+                else:
+                    from .config import DEFAULT_RUN_DIR_BASE
+                    campaign_dir = Path(DEFAULT_RUN_DIR_BASE) / f"campaign-{config.name}"
+            except Exception as e:
+                print(f"Error loading configuration: {e}")
+                return 1
+                
+        elif input_path.is_dir():
+            # User provided campaign directory
+            campaign_dir = input_path
+            
+            # Find the original config file in the directory
+            config_files = list(campaign_dir.glob("*.yaml")) + list(campaign_dir.glob("*.yml"))
+            if not config_files:
+                print(f"Error: No YAML configuration file found in {campaign_dir}")
+                return 1
+            config_file = config_files[0]  # Use the first one found
+            
+        else:
+            print(f"Error: Path must be either a YAML config file or campaign directory: {input_path}")
             return 1
         
-        # Try to load campaign from directory
+        # Check if campaign directory exists
+        if not campaign_dir.exists():
+            print(f"Error: Campaign directory not found: {campaign_dir}")
+            print("Hint: Create the campaign first with 'pkdpipe-campaign create'")
+            return 1
+        
+        # Check for campaign state
         state_file = campaign_dir / "campaign_state.json"
         if not state_file.exists():
             print(f"Error: No campaign state found in {campaign_dir}")
             print("Hint: Create the campaign first with 'pkdpipe-campaign create'")
             return 1
         
-        # Find the original config file
-        config_files = list(campaign_dir.glob("*.yaml")) + list(campaign_dir.glob("*.yml"))
-        if not config_files:
-            print(f"Error: No YAML configuration file found in {campaign_dir}")
-            return 1
-        
-        config_file = config_files[0]  # Use the first one found
+        # Load the campaign
         campaign = Campaign(str(config_file))
+        
+        # Check for conflicting flags
+        if args.dry_run and args.no_submit:
+            print("Error: --dry-run and --no-submit cannot be used together")
+            return 1
         
         if args.variant:
             # Submit specific variant
@@ -89,23 +126,34 @@ def submit_campaign(args) -> int:
                 print(f"Available variants: {', '.join(available)}")
                 return 1
             
-            success = campaign.submit_variant(args.variant, dry_run=args.dry_run)
+            success = campaign.submit_variant(args.variant, dry_run=args.dry_run, no_submit=args.no_submit)
             if success:
-                print(f"✓ Successfully submitted variant '{args.variant}'")
+                if args.dry_run:
+                    print(f"✓ Would submit variant '{args.variant}'")
+                elif args.no_submit:
+                    print(f"✓ Files created for variant '{args.variant}' (not submitted)")
+                else:
+                    print(f"✓ Successfully submitted variant '{args.variant}'")
                 return 0
             else:
-                print(f"✗ Failed to submit variant '{args.variant}'")
+                print(f"✗ Failed to process variant '{args.variant}'")
                 return 1
         else:
             # Submit all ready variants
             max_subs = args.max_submissions if hasattr(args, 'max_submissions') else None
             submitted = campaign.submit_ready_variants(
                 max_submissions=max_subs, 
-                dry_run=args.dry_run
+                dry_run=args.dry_run,
+                no_submit=args.no_submit
             )
             
             if submitted > 0:
-                print(f"✓ Successfully submitted {submitted} variant(s)")
+                if args.dry_run:
+                    print(f"✓ Would submit {submitted} variant(s)")
+                elif args.no_submit:
+                    print(f"✓ Created files for {submitted} variant(s) (not submitted)")
+                else:
+                    print(f"✓ Successfully submitted {submitted} variant(s)")
                 return 0
             else:
                 print("No variants were ready for submission")
@@ -237,7 +285,9 @@ def main():
     submit_parser.add_argument('campaign_dir', help='Path to campaign directory')
     submit_parser.add_argument('--variant', help='Submit specific variant (optional)')
     submit_parser.add_argument('--dry-run', action='store_true',
-                              help='Prepare files but do not actually submit')
+                              help='Show what would be submitted without doing anything')
+    submit_parser.add_argument('--no-submit', action='store_true',
+                              help='Create all simulation files and directories but do not submit jobs')
     submit_parser.add_argument('--max-submissions', type=int,
                               help='Maximum number of variants to submit')
     
