@@ -35,6 +35,7 @@ from .config import (
     COSMOLOGY_PRESETS,
     DEFAULT_RUN_DIR_BASE,
     DEFAULT_SCRATCH_DIR_BASE,
+    DEFAULT_JOB_NAME_TEMPLATE,
     PkdpipeConfigError
 )
 
@@ -196,6 +197,9 @@ class Campaign:
         
         # Initialize simulations for each variant
         self._initialize_simulations()
+        
+        # Save initial state
+        self._save_state()
     
     def _setup_directories(self):
         """Setup campaign directory structure and load existing state."""
@@ -208,6 +212,17 @@ class Campaign:
         self.state_file = self.output_dir / "campaign_state.json"
         self.log_dir = self.output_dir / "logs"
         self.log_dir.mkdir(exist_ok=True)
+        
+        # Create runs directory for individual simulation directories
+        self.runs_dir = self.output_dir / "runs"
+        self.runs_dir.mkdir(exist_ok=True)
+        
+        # Copy the original config file to the campaign directory if we have one
+        if self.config_file and Path(self.config_file).exists():
+            import shutil
+            config_dest = self.output_dir / Path(self.config_file).name
+            if not config_dest.exists():
+                shutil.copy2(self.config_file, config_dest)
         
         # Load existing state if available
         self._load_state()
@@ -227,7 +242,11 @@ class Campaign:
             
             # Set cosmology and simulation name
             params['cosmo'] = variant.cosmology
-            params['simname'] = variant.name
+            params['simname'] = variant.resolution  # Use resolution preset name for proper preset lookup
+            
+            # Set required simulation parameters
+            # For campaigns, use the variant name as the job name instead of the default template
+            params['jobname_template'] = variant.name
             
             # Configure output directories
             if self.config.output_dir:
@@ -321,13 +340,14 @@ class Campaign:
         # Sort by priority (higher priority first)
         return sorted(submittable, key=lambda v: -v.priority)
     
-    def submit_variant(self, variant_name: str, dry_run: bool = False) -> bool:
+    def submit_variant(self, variant_name: str, dry_run: bool = False, no_submit: bool = False) -> bool:
         """
         Submit a specific simulation variant.
         
         Args:
             variant_name: Name of variant to submit
-            dry_run: If True, prepare files but don't actually submit
+            dry_run: If True, show what would be submitted without doing anything
+            no_submit: If True, create files and directories but do not submit to SLURM
         
         Returns:
             True if submission successful
@@ -340,6 +360,18 @@ class Campaign:
         try:
             if dry_run:
                 print(f"DRY RUN: Would submit variant '{variant_name}'")
+                return True
+            elif no_submit:
+                # Create files and directories but don't submit to SLURM
+                # Set sbatch to False so sim.create() doesn't submit
+                sim.params['sbatch'] = False
+                sim.create()
+                
+                # Update status to indicate files are prepared
+                self.simulation_status[variant_name] = SimulationStatus.NOT_SUBMITTED
+                
+                print(f"✓ Files created for variant '{variant_name}' (not submitted to SLURM)")
+                self._save_state()
                 return True
             else:
                 # Set sbatch to True for automatic submission
@@ -359,13 +391,14 @@ class Campaign:
             self._save_state()
             return False
     
-    def submit_ready_variants(self, max_submissions: Optional[int] = None, dry_run: bool = False) -> int:
+    def submit_ready_variants(self, max_submissions: Optional[int] = None, dry_run: bool = False, no_submit: bool = False) -> int:
         """
         Submit all variants that are ready for submission.
         
         Args:
             max_submissions: Maximum number of variants to submit (None for unlimited)
-            dry_run: If True, prepare files but don't actually submit
+            dry_run: If True, show what would be submitted without doing anything
+            no_submit: If True, create files and directories but do not submit to SLURM
         
         Returns:
             Number of variants successfully submitted
@@ -376,11 +409,11 @@ class Campaign:
         
         submitted_count = 0
         for variant in submittable:
-            if self.submit_variant(variant.name, dry_run=dry_run):
+            if self.submit_variant(variant.name, dry_run=dry_run, no_submit=no_submit):
                 submitted_count += 1
             
-            # Check concurrent job limit
-            if not dry_run and self._get_running_job_count() >= self.config.max_concurrent_jobs:
+            # Check concurrent job limit (only applies to actual submissions)
+            if not dry_run and not no_submit and self._get_running_job_count() >= self.config.max_concurrent_jobs:
                 print(f"Reached maximum concurrent job limit ({self.config.max_concurrent_jobs})")
                 break
         
