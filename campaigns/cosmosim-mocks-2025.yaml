@@ -31,6 +31,7 @@ base_params:
   account: "cosmosim"
   email: "malvarez@slac.stanford.edu"
   partition: "gpu"
+  cpupert: 128
 
 # Output and scratch directories
 output_dir: "/global/cfs/cdirs/cosmosim/slac/malvarez/pkdgrav3/campaigns/cosmosim-mocks-2025"
@@ -40,8 +41,8 @@ scratch_dir: "/pscratch/sd/m/malvarez/pkdgrav3/campaigns/cosmosim-mocks-2025"
 variants:
   # VALIDATION RUNS (Priority 100-89) - Submit immediately for testing
   - name: "lcdm-validation"
-    cosmology: "flagship-lcdm"
-    resolution: "summer-validation"
+    cosmology: "lcdm"
+    resolution: "S0-validation"
     priority: 100
     dependencies: []
     submission_deadline: "2025-06-10T23:59:59"
@@ -51,8 +52,8 @@ variants:
       nSteps: "[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]"
       
   - name: "wcdm-validation"
-    cosmology: "flagship-wcdm"
-    resolution: "summer-validation"
+    cosmology: "wcdm"
+    resolution: "S0-validation"
     priority: 95
     dependencies: ["lcdm-validation"]
     submission_deadline: "2025-06-12T23:59:59"
@@ -62,8 +63,8 @@ variants:
       nSteps: "[1, 1, 1]"
       
   - name: "phicdm-validation"
-    cosmology: "flagship-phicdm"
-    resolution: "summer-validation"
+    cosmology: "phicdm"
+    resolution: "S0-validation"
     priority: 90
     dependencies: ["wcdm-validation"]
     submission_deadline: "2025-06-14T23:59:59"
@@ -74,8 +75,8 @@ variants:
 
   # SCALING TESTS (Priority 89-80) - Submit after validation completes
   - name: "lcdm-scaling"
-    cosmology: "flagship-lcdm"
-    resolution: "summer-scaling-2800"
+    cosmology: "lcdm"
+    resolution: "S0-scaling"
     priority: 85
     dependencies: ["lcdm-validation"]
     submission_deadline: "2025-06-20T23:59:59"
@@ -86,8 +87,8 @@ variants:
 
   # PRODUCTION RUNS (Priority 79-70) - Critical for July 1 deadline
   - name: "lcdm-production"
-    cosmology: "flagship-lcdm"
-    resolution: "summer-production"
+    cosmology: "lcdm"
+    resolution: "S0-production"
     priority: 79
     dependencies: ["lcdm-scaling"]
     submission_deadline: "2025-06-28T23:59:59"
@@ -97,8 +98,8 @@ variants:
       nSteps: "[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]"
       
   - name: "wcdm-production"
-    cosmology: "flagship-wcdm"
-    resolution: "summer-production"
+    cosmology: "wcdm"
+    resolution: "S0-production"
     priority: 75
     dependencies: ["lcdm-production"]
     submission_deadline: "2025-06-30T23:59:59"
@@ -109,8 +110,8 @@ variants:
 
   # EXTENDED ANALYSIS (Priority 69-60) - Submit after production if resources allow
   - name: "phicdm-production"
-    cosmology: "flagship-phicdm"
-    resolution: "summer-production"
+    cosmology: "phicdm"
+    resolution: "S0-production"
     priority: 65
     dependencies: ["wcdm-production"]
     submission_deadline: "2025-07-05T23:59:59"

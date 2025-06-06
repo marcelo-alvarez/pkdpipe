@@ -386,12 +386,12 @@ class TestCampaignCLI:
 
 
 class TestCosmologyPresets:
-    """Test the cosmology presets for summer campaign."""
+    """Test the cosmology presets for campaign."""
     
-    def test_summer_lcdm_preset_exists(self):
-        """Test that summer-lcdm preset is properly defined."""
-        assert "summer-lcdm" in COSMOLOGY_PRESETS
-        lcdm = COSMOLOGY_PRESETS["summer-lcdm"]
+    def test_lcdm_preset_exists(self):
+        """Test that lcdm preset is properly defined."""
+        assert "lcdm" in COSMOLOGY_PRESETS
+        lcdm = COSMOLOGY_PRESETS["lcdm"]
         
         # Check key parameters
         assert "h" in lcdm
@@ -399,12 +399,12 @@ class TestCosmologyPresets:
         assert "omch2" in lcdm
         assert "As" in lcdm
         assert "ns" in lcdm
-        assert lcdm["description"] == "Summer campaign LCDM cosmology based on DESI-DR2-Planck-ACT"
+        assert lcdm["description"] == "Standard LCDM cosmology based on DESI-DR2-Planck-ACT"
     
-    def test_summer_wcdm_preset_exists(self):
-        """Test that summer-wcdm preset is properly defined."""
-        assert "summer-wcdm" in COSMOLOGY_PRESETS
-        wcdm = COSMOLOGY_PRESETS["summer-wcdm"]
+    def test_wcdm_preset_exists(self):
+        """Test that wcdm preset is properly defined."""
+        assert "wcdm" in COSMOLOGY_PRESETS
+        wcdm = COSMOLOGY_PRESETS["wcdm"]
         
         # Check wCDM-specific parameters
         assert "w0" in wcdm
@@ -413,10 +413,10 @@ class TestCosmologyPresets:
         assert wcdm["wa"] == 0.1
         assert "evolving dark energy" in wcdm["description"]
     
-    def test_summer_phicdm_preset_exists(self):
-        """Test that summer-phicdm preset is properly defined."""
-        assert "summer-phicdm" in COSMOLOGY_PRESETS
-        phicdm = COSMOLOGY_PRESETS["summer-phicdm"]
+    def test_phicdm_preset_exists(self):
+        """Test that phicdm preset is properly defined."""
+        assert "phicdm" in COSMOLOGY_PRESETS
+        phicdm = COSMOLOGY_PRESETS["phicdm"]
         
         # Check phiCDM-specific parameters
         assert "phi_model" in phicdm
@@ -429,10 +429,10 @@ class TestCosmologyPresets:
 class TestSimulationPresets:
     """Test the simulation presets for summer campaign."""
     
-    def test_summer_validation_preset_exists(self):
-        """Test that summer-validation preset is properly defined."""
-        assert "summer-validation" in SIMULATION_PRESETS
-        validation = SIMULATION_PRESETS["summer-validation"]
+    def test_S0_validation_preset_exists(self):
+        """Test that S0-validation preset is properly defined."""
+        assert "S0-validation" in SIMULATION_PRESETS
+        validation = SIMULATION_PRESETS["S0-validation"]
         
         assert validation["dBoxSize"] == 1050
         assert validation["nGrid"] == 1400
@@ -440,10 +440,10 @@ class TestSimulationPresets:
         assert validation["gpupern"] == 4
         assert validation["tlimit"] == "12:00:00"
     
-    def test_summer_production_preset_exists(self):
-        """Test that summer-production preset is properly defined."""
-        assert "summer-production" in SIMULATION_PRESETS
-        production = SIMULATION_PRESETS["summer-production"]
+    def test_S0_production_preset_exists(self):
+        """Test that S0-production preset is properly defined."""
+        assert "S0-production" in SIMULATION_PRESETS
+        production = SIMULATION_PRESETS["S0-production"]
         
         assert production["dBoxSize"] == 5250
         assert production["nGrid"] == 7000
@@ -451,16 +451,27 @@ class TestSimulationPresets:
         assert production["gpupern"] == 4
         assert production["tlimit"] == "48:00:00"
     
-    def test_summer_scaling_preset_exists(self):
-        """Test that summer-scaling-2800 preset is properly defined."""
-        assert "summer-scaling-2800" in SIMULATION_PRESETS
-        scaling = SIMULATION_PRESETS["summer-scaling-2800"]
+    def test_S0_scaling_preset_exists(self):
+        """Test that S0-scaling preset is properly defined."""
+        assert "S0-scaling" in SIMULATION_PRESETS
+        scaling = SIMULATION_PRESETS["S0-scaling"]
         
         assert scaling["dBoxSize"] == 2100
         assert scaling["nGrid"] == 2800
         assert scaling["nodes"] == 16
         assert scaling["gpupern"] == 4
         assert scaling["tlimit"] == "24:00:00"
+    
+    def test_highres_preset_exists(self):
+        """Test that highres preset is properly defined."""
+        assert "highres" in SIMULATION_PRESETS
+        highres = SIMULATION_PRESETS["highres"]
+        
+        assert highres["dBoxSize"] == 3150
+        assert highres["nGrid"] == 4200
+        assert highres["nodes"] == 54
+        assert highres["gpupern"] == 4
+        assert highres["tlimit"] == "36:00:00"
 
 
 if __name__ == '__main__':
