@@ -21,24 +21,24 @@ Multi-cosmology simulation campaign with LCDM, wCDM, and phiCDM models for summe
 
 ## Cosmology Models
 
-This campaign uses three summer cosmology presets:
+This campaign uses three clean cosmology presets:
 
 | Model | Preset | Description |
 |-------|--------|-------------|
-| **ΛCDM** | `summer-lcdm` | Standard Lambda Cold Dark Matter cosmology |
-| **wCDM** | `summer-wcdm` | Dark energy with constant equation of state parameter w |
-| **φCDM** | `summer-phicdm` | Scalar field dark energy model |
+| **ΛCDM** | `lcdm` | Standard Lambda Cold Dark Matter cosmology |
+| **wCDM** | `wcdm` | Dark energy with evolving equation of state (w0, wa) |
+| **φCDM** | `phicdm` | Scalar field dark energy model |
 
 All cosmology presets inherit from `desi-dr2-planck-act-mnufree` baseline parameters.
 
 ## Resolution Configurations
 
-| Preset | Box Size | Particles | Purpose |
-|--------|----------|-----------|---------|
-| `summer-validation` | 1050 Mpc/h | 1400³ | Quick validation runs |
-| `summer-scaling-2800` | 2100 Mpc/h | 2800³ | Scaling performance tests |
-| `summer-scaling-4200` | 3150 Mpc/h | 4200³ | High-resolution scaling tests |
-| `summer-production` | 5250 Mpc/h | 7000³ | Full production simulations |
+| Preset | Box Size | Particles | Purpose | Scale Factor |
+|--------|----------|-----------|---------|--------------|
+| `S0-validation` | 1050 Mpc/h | 1400³ | Quick validation runs | 1x |
+| `S0-scaling` | 2100 Mpc/h | 2800³ | Scaling performance tests | 2x |
+| `S0-highres` | 3150 Mpc/h | 4200³ | High-resolution tests | 3x |
+| `S0-production` | 5250 Mpc/h | 7000³ | Full production simulations | 5x |
 
 ## Simulation Variants
 
@@ -47,9 +47,9 @@ All cosmology presets inherit from `desi-dr2-planck-act-mnufree` baseline parame
 
 | Variant | Cosmology | Resolution | Priority | Deadline | Dependencies |
 |---------|-----------|------------|----------|----------|--------------|
-| `lcdm-validation` | ΛCDM | Validation | 100 | Jun 10 | None |
-| `wcdm-validation` | wCDM | Validation | 95 | Jun 12 | lcdm-validation |
-| `phicdm-validation` | φCDM | Validation | 90 | Jun 14 | wcdm-validation |
+| `lcdm-validation` | ΛCDM | S0-validation | 100 | Jun 10 | None |
+| `wcdm-validation` | wCDM | S0-validation | 95 | Jun 12 | lcdm-validation |
+| `phicdm-validation` | φCDM | S0-validation | 90 | Jun 14 | wcdm-validation |
 
 **Purpose:** Parameter and workflow testing with full 39 snapshots (ΛCDM) or 3 snapshots (wCDM, φCDM).
 
@@ -58,7 +58,7 @@ All cosmology presets inherit from `desi-dr2-planck-act-mnufree` baseline parame
 
 | Variant | Cosmology | Resolution | Priority | Deadline | Dependencies |
 |---------|-----------|------------|----------|----------|--------------|
-| `lcdm-scaling` | ΛCDM | Scaling | 85 | Jun 20 | lcdm-validation |
+| `lcdm-scaling` | ΛCDM | S0-scaling | 85 | Jun 20 | lcdm-validation |
 
 **Purpose:** Performance scaling validation with full 39 snapshots at intermediate resolution.
 
@@ -67,8 +67,8 @@ All cosmology presets inherit from `desi-dr2-planck-act-mnufree` baseline parame
 
 | Variant | Cosmology | Resolution | Priority | Deadline | Dependencies |
 |---------|-----------|------------|----------|----------|--------------|
-| `lcdm-production` | ΛCDM | Production | 79 | Jun 28 | lcdm-scaling |
-| `wcdm-production` | wCDM | Production | 75 | Jun 30 | lcdm-production |
+| `lcdm-production` | ΛCDM | S0-production | 79 | Jun 28 | lcdm-scaling |
+| `wcdm-production` | wCDM | S0-production | 75 | Jun 30 | lcdm-production |
 
 **Purpose:** **CRITICAL** full production runs with 39 snapshots that **MUST** be submitted by July 1, 2025 deadline.
 
@@ -77,7 +77,7 @@ All cosmology presets inherit from `desi-dr2-planck-act-mnufree` baseline parame
 
 | Variant | Cosmology | Resolution | Priority | Deadline | Dependencies |
 |---------|-----------|------------|----------|----------|--------------|
-| `phicdm-production` | φCDM | Production | 65 | Jul 5 | wcdm-production |
+| `phicdm-production` | φCDM | S0-production | 65 | Jul 5 | wcdm-production |
 
 **Purpose:** Lower priority production run with 39 snapshots, submit only after critical runs are secured.
 
@@ -128,17 +128,17 @@ pkdpipe-campaign create campaigns/cosmosim-mocks-2025.yaml
 
 ### Monitor Progress
 ```bash
-pkdpipe-campaign status cosmosim-mocks-2025
+pkdpipe-campaign status campaigns/cosmosim-mocks-2025.yaml
 ```
 
 ### List All Variants
 ```bash
-pkdpipe-campaign list cosmosim-mocks-2025
+pkdpipe-campaign list campaigns/cosmosim-mocks-2025.yaml
 ```
 
 ### Submit Next Ready Jobs
 ```bash
-pkdpipe-campaign submit cosmosim-mocks-2025
+pkdpipe-campaign submit campaigns/cosmosim-mocks-2025.yaml
 ```
 
 ## Risk Assessment

@@ -16,8 +16,11 @@ dRedFrom        = ${dRedFrom}   # Starting redshift
 h               = ${h}
 dOmega0         = ${dOmega0}
 dLambda         = ${dLambda}
+dOmegaDE        = ${dOmegaDE}
 dSigma8         = ${dSigma8}
 dSpectral       = ${dSpectral}
+w0              = ${w0}
+wa              = ${wa}
 
 # Snapshot I/O
 nSteps          = ${nSteps}

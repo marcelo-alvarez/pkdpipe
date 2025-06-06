@@ -85,39 +85,35 @@ SIMULATION_PRESETS = {
         "nodes": 16,
     },
     
-    # Campaign-specific presets for summer multi-cosmology campaigns
+    # Campaign-specific presets with [1, 2, 3, 5]x scaling pattern
     # Node allocation follows scaling law: N = 2 * (nGrid/1400)^3
-    "summer-validation": {
+    "S0-validation": {
         "dBoxSize": 1050,
         "nGrid": 1400,
-        "nodes": 2,  # Updated: 2 * (1400/1400)^3 = 2 * 1 = 2
+        "nodes": 2,  # 2 * (1400/1400)^3 = 2 * 1 = 2
         "gpupern": 4,
         "tlimit": "12:00:00",
-        "comment": "Validation resolution for campaign testing",
     },
-    "summer-production": {
-        "dBoxSize": 5250,
-        "nGrid": 7000,
-        "nodes": 250,  # Correct: 2 * (7000/1400)^3 = 2 * 125 = 250
-        "gpupern": 4,
-        "tlimit": "48:00:00",
-        "comment": "Full summer resolution for production simulations",
-    },
-    "summer-scaling-2800": {
+    "S0-scaling": {
         "dBoxSize": 2100,
         "nGrid": 2800,
-        "nodes": 16,  # Updated: 2 * (2800/1400)^3 = 2 * 8 = 16
+        "nodes": 16,  # 2 * (2800/1400)^3 = 2 * 8 = 16
         "gpupern": 4,
         "tlimit": "24:00:00",
-        "comment": "LCDM scaling test with 2800³ grid",
     },
-    "summer-scaling-4200": {
+    "S0-highres": {
         "dBoxSize": 3150,
         "nGrid": 4200,
-        "nodes": 54,  # Updated: 2 * (4200/1400)^3 = 2 * 27 = 54
+        "nodes": 54,  # 2 * (4200/1400)^3 = 2 * 27 = 54
         "gpupern": 4,
         "tlimit": "36:00:00",
-        "comment": "LCDM scaling test with 4200³ grid",
+    },
+    "S0-production": {
+        "dBoxSize": 5250,
+        "nGrid": 7000,
+        "nodes": 250,  # 2 * (7000/1400)^3 = 2 * 125 = 250
+        "gpupern": 4,
+        "tlimit": "48:00:00",
     },
 }
 
@@ -176,31 +172,31 @@ COSMOLOGY_PRESETS = {
     },
 }
 
-# Add summer campaign cosmology variants based on desi-dr2-planck-act-mnufree
+# Cosmology variants based on desi-dr2-planck-act-mnufree
 # These inherit from the base preset and only override specific parameters
-_base_summer_cosmology = COSMOLOGY_PRESETS["desi-dr2-planck-act-mnufree"].copy()
+_base_cosmology = COSMOLOGY_PRESETS["desi-dr2-planck-act-mnufree"].copy()
 
 COSMOLOGY_PRESETS.update({
-    "summer-lcdm": {
-        **_base_summer_cosmology,
-        "description": "Summer campaign LCDM cosmology based on DESI-DR2-Planck-ACT"
+    "lcdm": {
+        **_base_cosmology,
+        "description": "Standard LCDM cosmology based on DESI-DR2-Planck-ACT"
     },
-    "summer-wcdm": {
-        **_base_summer_cosmology,
+    "wcdm": {
+        **_base_cosmology,
         # Dark energy equation of state parameters (only parameters that differ)
-        "w0": -0.9,  # Different from LCDM for comparison
-        "wa": 0.1,   # Time-varying component
-        "description": "Summer campaign wCDM cosmology with evolving dark energy"
+        "w0": -0.838, # https://arxiv.org/pdf/2503.14738
+        "wa": -0.62,  #   |-> DESI+CMB+Pantheon+
+        "description": "wCDM cosmology with evolving dark energy"
     },
-    "summer-phicdm": {
-        **_base_summer_cosmology,
+    "phicdm": {
+        **_base_cosmology,
         # Scalar field parameters (only parameters that differ)
         "phi_model": "quintessence",
         "phi_params": {
             "potential": "exponential",
             "lambda_phi": 0.1
         },
-        "description": "Summer campaign phiCDM cosmology with scalar field dark energy"
+        "description": "phiCDM cosmology with scalar field dark energy"
     },
 })
 

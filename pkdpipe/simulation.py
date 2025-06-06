@@ -8,6 +8,7 @@ import pathlib
 
 from .cosmology import Cosmology
 from .cli import parsecommandline
+from .parameter_types import extract_cosmological_parameters
 from .config import (
     DEFAULT_RUN_DIR_BASE,
     DEFAULT_SCRATCH_DIR_BASE,
@@ -319,34 +320,40 @@ class Simulation:
         """
         Resolves the actual job name from the `jobname_template` and current parameters.
 
-        The job name template (e.g., "N${nGrid}-L${dBoxSize}-G${gpupern}") is populated
+        The job name template (e.g., "N{nGrid}-L{dBoxSize}-{gpupern}gpus") is populated
         using values from `self.params` like 'nGrid', 'dBoxSize', and 'gpupern'.
+        If the jobname_template contains no placeholders (no '{' characters), it's used as-is.
         The resolved name is stored in `self.params['jobname_actual']`.
         If any required keys for the template are missing or if an error occurs during
         substitution, a warning is printed, and a fallback job name is generated.
         """
         template_str = self.params.get('jobname_template', DEFAULT_JOB_NAME_TEMPLATE)
+        
+        # If the template contains no placeholders, use it as-is (e.g., for campaign variant names)
+        if '{' not in template_str:
+            self.params['jobname_actual'] = template_str
+            return
+            
         try:
             template_keys = {
                 'nGrid': self.params.get('nGrid'),
                 'dBoxSize': self.params.get('dBoxSize'),
                 'gpupern': self.params.get('gpupern')
             }
-            valid_template_keys = {k: v for k, v in template_keys.items() if v is not None}
             
-            if not all(k in valid_template_keys for k in ['nGrid', 'dBoxSize', 'gpupern']):
-                 print(f"Warning: Not all keys for jobname template '{template_str}' are available. Using fallback name.")
-                 self.params['jobname_actual'] = f"pkdpipe_run_{self.params.get('simname', 'default')}"
-
+            # Check if all required keys are available and not None
+            if not all(template_keys[k] is not None for k in ['nGrid', 'dBoxSize', 'gpupern']):
+                print(f"Warning: Not all keys for jobname template '{template_str}' are available. Using fallback name.")
+                self.params['jobname_actual'] = f"pkdpipe_run_{self.params.get('simname', 'default')}"
             else:
-                jobname_template = Template(template_str)
-                self.params['jobname_actual'] = jobname_template.substitute(valid_template_keys)
+                # Use string format() method instead of Template class
+                self.params['jobname_actual'] = template_str.format(**template_keys)
 
         except KeyError as e:
             print(f"Warning: Missing key {e} for job name template '{template_str}'. Using fallback name.")
             self.params['jobname_actual'] = f"pkdpipe_run_{self.params.get('simname', 'default')}"
-        except TypeError as e:
-            print(f"Warning: Type error during job name templating (likely a None value): {e}. Using fallback name.")
+        except (TypeError, ValueError) as e:
+            print(f"Warning: Error during job name templating: {e}. Using fallback name.")
             self.params['jobname_actual'] = f"pkdpipe_run_{self.params.get('simname', 'default')}"
 
     def _setup_directories_and_paths(self) -> Dict[str, pathlib.Path]:
@@ -405,27 +412,27 @@ class Simulation:
 
         return paths
 
-    def _generate_cosmology_transfer_file(self, cosmo_params: Dict[str, Any], transfer_file_path: pathlib.Path) -> None:
+    def _generate_cosmology_transfer_file(self, all_params: Dict[str, Any], transfer_file_path: pathlib.Path) -> None:
         """
-        Initializes a `Cosmology` object and writes the transfer function file.
+        Generates a cosmology transfer function file by creating a `Cosmology` instance.
 
-        This method uses the cosmological parameters specified in `cosmo_params`
-        (typically derived from `self.params`) to instantiate a `Cosmology` object.
-        It then calls the `writetransfer` method of the `Cosmology` instance to generate
-        and save the transfer function to `transfer_file_path`.
-
-        After generating the transfer file, it updates `self.params` with 'effective'
-        cosmological parameters (h, omegam, omegal, sigma8, ns) obtained from the
-        `Cosmology` instance. These effective parameters reflect the actual values used
-        by CAMB, including any defaults or normalizations applied within the `Cosmology` class.
+        This method extracts only cosmological parameters from the input, creates a 
+        `Cosmology` object using only those parameters, computes the transfer function, 
+        and writes it to the specified file path. It also extracts key effective 
+        cosmological parameters from the `Cosmology` instance and stores them in 
+        `self.params` with 'effective_' prefixes for later use in the pkdgrav3 .par 
+        file generation.
 
         Args:
-            cosmo_params (Dict[str, Any]): A dictionary of parameters to pass to the
-                                           `Cosmology` constructor. Should include 'cosmo'
-                                           for the preset name and any overrides.
+            all_params (Dict[str, Any]): A dictionary containing all simulation parameters.
+                                        Only cosmological parameters will be extracted and
+                                        passed to the Cosmology constructor.
             transfer_file_path (pathlib.Path): The path where the transfer function file
                                                should be written.
         """
+        # Extract only cosmological parameters to avoid cluttering warning messages
+        cosmo_params = extract_cosmological_parameters(all_params)
+        
         cosmo_instance = Cosmology(
             cosmology=cosmo_params.get('cosmo', DEFAULT_COSMOLOGY_NAME), 
             **cosmo_params
@@ -434,10 +441,12 @@ class Simulation:
         print(f"Cosmology transfer file written to '{transfer_file_path}'")
         
         self.params['effective_h'] = cosmo_instance.params.get('h')
-        self.params['effective_omegam'] = cosmo_instance.params.get('omegam')
-        self.params['effective_omegal'] = cosmo_instance.params.get('omegal')
-        self.params['effective_sigma8'] = cosmo_instance.params.get('sigma8')
+        self.params['effective_omegam'] = cosmo_instance.params.get('omegam_calculated')
+        self.params['effective_omegal'] = cosmo_instance.params.get('omegal_calculated')
+        self.params['effective_sigma8'] = cosmo_instance.params.get('sigma8_final')
         self.params['effective_ns'] = cosmo_instance.params.get('ns')
+        self.params['effective_w0'] = cosmo_instance.params.get('w0', -1.0)  # Default to LCDM value
+        self.params['effective_wa'] = cosmo_instance.params.get('wa', 0.0)   # Default to LCDM value
 
     def _generate_parameter_file(self, paths: Dict[str, pathlib.Path]) -> None:
         """
@@ -484,6 +493,19 @@ class Simulation:
         effective_omegam = self.params.get('effective_omegam')
         effective_omegal = self.params.get('effective_omegal')
         effective_sigma8 = self.params.get('effective_sigma8')
+        effective_w0 = self.params.get('effective_w0')
+        effective_wa = self.params.get('effective_wa')
+        
+        # For wCDM cosmology: if w0 or wa are non-zero, use dOmegaDE instead of dLambda
+        is_wcdm = (effective_w0 is not None and effective_w0 != -1.0) or (effective_wa is not None and effective_wa != 0.0)
+        if is_wcdm:
+            # Set dOmegaDE = dLambda and dLambda = 0 for wCDM
+            dLambda_val = 0.0
+            dOmegaDE_val = effective_omegal if effective_omegal is not None else 0.7
+        else:
+            # Standard LCDM: use dLambda, set dOmegaDE = 0
+            dLambda_val = effective_omegal if effective_omegal is not None else 0.7
+            dOmegaDE_val = 0.0
 
         # Create the output subdirectory path with the job name
         actual_job_name = self.params.get('jobname_actual', 'pkdpipe_job')
@@ -496,8 +518,11 @@ class Simulation:
             "dSpectral": f"{effective_ns if effective_ns is not None else 0.96:0.6f}",
             "h": f"{effective_h_par if effective_h_par is not None else 0.7:0.6f}",
             "dOmega0": f"{effective_omegam if effective_omegam is not None else 0.3:0.6f}",
-            "dLambda": f"{effective_omegal if effective_omegal is not None else 0.7:0.6f}",
+            "dLambda": f"{dLambda_val:0.6f}",
+            "dOmegaDE": f"{dOmegaDE_val:0.6f}",
             "dSigma8": f"{effective_sigma8 if effective_sigma8 is not None else 0.8:0.6f}",
+            "w0": f"{effective_w0 if effective_w0 is not None else -1.0:0.6f}",
+            "wa": f"{effective_wa if effective_wa is not None else 0.0:0.6f}",
             "dRedFrom": f"{self.params['dRedFrom']}",
             "nGrid": f"{self.params['nGrid']:<4}",
             "dBoxSize": f"{self.params['dBoxSize']:<4}",
