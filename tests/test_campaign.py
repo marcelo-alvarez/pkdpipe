@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test suite for pkdpipe campaign management functionality.
+Test pkdpipe campaign management functionality.
 
 This module contains comprehensive tests for the campaign orchestration system,
 including configuration validation, simulation variant management, dependency
@@ -33,16 +33,16 @@ class TestSimulationVariant:
         """Test creating a valid simulation variant."""
         variant = SimulationVariant(
             name="test-variant",
-            cosmology="summer-lcdm",
-            resolution="summer-validation",
+            cosmology="lcdm",
+            resolution="S0-validation",
             priority=75,
             dependencies=["other-variant"],
             custom_params={"nGrid": 1000}
         )
         
         assert variant.name == "test-variant"
-        assert variant.cosmology == "summer-lcdm"
-        assert variant.resolution == "summer-validation"
+        assert variant.cosmology == "lcdm"
+        assert variant.resolution == "S0-validation"
         assert variant.priority == 75
         assert "other-variant" in variant.dependencies
         assert variant.custom_params["nGrid"] == 1000
@@ -53,7 +53,7 @@ class TestSimulationVariant:
             SimulationVariant(
                 name="test-variant",
                 cosmology="nonexistent-cosmology",
-                resolution="summer-validation"
+                resolution="S0-validation"
             )
     
     def test_invalid_resolution_raises_error(self):
@@ -61,7 +61,7 @@ class TestSimulationVariant:
         with pytest.raises(ValueError, match="Unknown simulation preset"):
             SimulationVariant(
                 name="test-variant",
-                cosmology="summer-lcdm",
+                cosmology="lcdm",
                 resolution="nonexistent-resolution"
             )
 
@@ -73,8 +73,8 @@ class TestCampaignConfig:
         """Helper to create a test variant."""
         return SimulationVariant(
             name=name,
-            cosmology="summer-lcdm", 
-            resolution="summer-validation"
+            cosmology="lcdm", 
+            resolution="S0-validation"
         )
     
     def test_valid_config_creation(self):
@@ -123,8 +123,8 @@ class TestCampaignConfig:
             'variants': [
                 {
                     'name': 'test-variant',
-                    'cosmology': 'summer-lcdm',
-                    'resolution': 'summer-validation',
+                    'cosmology': 'lcdm',
+                    'resolution': 'S0-validation',
                     'priority': 80,
                     'custom_params': {'nGrid': 500}
                 }
@@ -160,14 +160,14 @@ class TestCampaign:
         variants = [
             SimulationVariant(
                 name="variant1",
-                cosmology="summer-lcdm",
-                resolution="summer-validation",
+                cosmology="lcdm",
+                resolution="S0-validation",
                 priority=80
             ),
             SimulationVariant(
                 name="variant2", 
-                cosmology="summer-wcdm",
-                resolution="summer-validation",
+                cosmology="wcdm",
+                resolution="S0-validation",
                 priority=60,
                 dependencies=["variant1"]
             )
@@ -234,6 +234,7 @@ class TestCampaign:
         """Test real submission of a variant."""
         config = self.create_test_config()
         mock_sim_instance = MagicMock()
+        mock_sim_instance.create.return_value = "12345678"  # Mock job ID
         mock_simulation.return_value = mock_sim_instance
         
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -245,6 +246,7 @@ class TestCampaign:
             assert success
             mock_sim_instance.create.assert_called_once()
             assert campaign.simulation_status["variant1"] == SimulationStatus.QUEUED
+            assert campaign.job_ids["variant1"] == "12345678"  # Check job ID is stored
     
     @patch('pkdpipe.campaign.Simulation')
     def test_submit_nonexistent_variant(self, mock_simulation):
@@ -331,8 +333,8 @@ class TestCampaignCLI:
             'variants': [
                 {
                     'name': 'cli-test-variant',
-                    'cosmology': 'summer-lcdm',
-                    'resolution': 'summer-validation',
+                    'cosmology': 'lcdm',
+                    'resolution': 'S0-validation',
                     'priority': 80
                 }
             ]
@@ -409,8 +411,8 @@ class TestCosmologyPresets:
         # Check wCDM-specific parameters
         assert "w0" in wcdm
         assert "wa" in wcdm
-        assert wcdm["w0"] == -0.9
-        assert wcdm["wa"] == 0.1
+        assert wcdm["w0"] == -0.838
+        assert wcdm["wa"] == -0.62
         assert "evolving dark energy" in wcdm["description"]
     
     def test_phicdm_preset_exists(self):
@@ -438,7 +440,7 @@ class TestSimulationPresets:
         assert validation["nGrid"] == 1400
         assert validation["nodes"] == 2
         assert validation["gpupern"] == 4
-        assert validation["tlimit"] == "12:00:00"
+        assert validation["tlimit"] == "48:00:00"  # Fixed: was 12:00:00, now correctly 48:00:00
     
     def test_S0_production_preset_exists(self):
         """Test that S0-production preset is properly defined."""
@@ -460,18 +462,17 @@ class TestSimulationPresets:
         assert scaling["nGrid"] == 2800
         assert scaling["nodes"] == 16
         assert scaling["gpupern"] == 4
-        assert scaling["tlimit"] == "24:00:00"
+        assert scaling["tlimit"] == "48:00:00"
     
-    def test_highres_preset_exists(self):
-        """Test that highres preset is properly defined."""
-        assert "highres" in SIMULATION_PRESETS
-        highres = SIMULATION_PRESETS["highres"]
+    def test_S0_test_preset_exists(self):
+        """Test that S0-test preset is properly defined (default simulation)."""
+        assert "S0-test" in SIMULATION_PRESETS
+        s0_test = SIMULATION_PRESETS["S0-test"]
         
-        assert highres["dBoxSize"] == 3150
-        assert highres["nGrid"] == 4200
-        assert highres["nodes"] == 54
-        assert highres["gpupern"] == 4
-        assert highres["tlimit"] == "36:00:00"
+        assert s0_test["dBoxSize"] == 525
+        assert s0_test["nGrid"] == 700
+        assert s0_test["nodes"] == 1
+        assert s0_test["tlimit"] == "12:00:00"  # Shorter time for testing
 
 
 if __name__ == '__main__':

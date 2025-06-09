@@ -3,7 +3,7 @@ import time
 import shutil
 import subprocess
 from string import Template
-from typing import Dict, Any, Union
+from typing import Dict, Any, Union, Optional
 import pathlib
 
 from .cosmology import Cosmology
@@ -588,7 +588,7 @@ class Simulation:
         except Exception as e:
             raise FileNotFoundError(f"Failed to copy run script from '{SCRIPT_RUN_SH}' to '{paths['runscript_dest']}': {e}")
 
-    def _handle_job_submission(self, paths: Dict[str, pathlib.Path]) -> None:
+    def _handle_job_submission(self, paths: Dict[str, pathlib.Path]) -> Optional[str]:
         """
         Handles the job submission process based on `self.params['sbatch']` and
         `self.params['interact']`.
@@ -605,14 +605,29 @@ class Simulation:
                                              Expected keys: "slurmfile", "job_dir", "runscript_dest",
                                              "parfile", "logfile".
 
+        Returns:
+            Optional[str]: The job ID if submitted via sbatch, None otherwise.
+
         Raises:
             JobSubmissionError: If `sbatch` is requested but the `sbatch` command fails or is not found.
         """
         run_command_display = f'{paths["runscript_dest"]} {paths["parfile"]} {paths["logfile"]}'
         if self.params.get('sbatch', False):
             try:
-                subprocess.run(["sbatch", str(paths["slurmfile"])], check=True, cwd=paths["job_dir"])
-                print(f"Job submitted via sbatch: {paths['slurmfile']}")
+                result = subprocess.run(["sbatch", str(paths["slurmfile"])], 
+                                       check=True, 
+                                       cwd=paths["job_dir"], 
+                                       capture_output=True, 
+                                       text=True)
+                # sbatch output format: "Submitted batch job <job_id>"
+                output = result.stdout.strip()
+                if output.startswith("Submitted batch job "):
+                    job_id = output.split()[-1]
+                    print(f"Job submitted via sbatch: {paths['slurmfile']} (Job ID: {job_id})")
+                    return job_id
+                else:
+                    print(f"Job submitted via sbatch: {paths['slurmfile']} (Unknown job ID format)")
+                    return None
             except subprocess.CalledProcessError as e:
                 raise JobSubmissionError(f"sbatch submission failed for '{paths['slurmfile']}': {e}")
             except FileNotFoundError:
@@ -621,12 +636,14 @@ class Simulation:
             print("Interactive mode: Job files created.")
             print(f"To run interactively, navigate to '{paths['job_dir']}' and execute:")
             print(f"  {run_command_display}")
+            return None
         else:
             print("Simulation files created. No submission requested.")
             print(f"To submit manually: sbatch {paths['slurmfile']}")
             print(f"Or run interactively in '{paths['job_dir']}': {run_command_display}")
+            return None
 
-    def create(self) -> None:
+    def create(self) -> Optional[str]:
         """
         Orchestrates the entire process of creating a pkdgrav3 simulation setup.
 
@@ -638,6 +655,9 @@ class Simulation:
         4. Generates the SLURM submission script (`_generate_slurm_script`).
         5. Copies the `run.sh` script (`_copy_run_script`).
         6. Handles job submission or prints instructions (`_handle_job_submission`).
+
+        Returns:
+            Optional[str]: The job ID if submitted via sbatch, None otherwise.
 
         Prints status messages throughout the process and a final completion message.
         Catches and prints specific errors (`DirectoryError`, `TemplateError`, `JobSubmissionError`)
@@ -652,11 +672,14 @@ class Simulation:
             self._generate_slurm_script(paths)
             self._copy_run_script(paths)
             
-            self._handle_job_submission(paths)
+            job_id = self._handle_job_submission(paths)
             
             print(f"\nSimulation '{self.params.get('jobname_actual')}' setup complete in '{paths['job_dir']}'.")
+            return job_id
 
         except (DirectoryError, TemplateError, JobSubmissionError) as e:
             print(f"Error during simulation creation: {e}")
+            return None
         except Exception as e:
             print(f"An unexpected error occurred during simulation creation: {e}")
+            return None
