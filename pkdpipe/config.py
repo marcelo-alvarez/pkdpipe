@@ -37,7 +37,7 @@ SCRIPT_RUN_SH = SCRIPTS_DIR / "run.sh"
 
 # --- Default Simulation Parameters ---
 DEFAULT_JOB_NAME_TEMPLATE = "N{nGrid}-L{dBoxSize}-{gpupern}gpus" # Corrected nodes.gpupern to gpupern based on typical usage
-DEFAULT_SIMULATION_NAME = "lcone-small"
+DEFAULT_SIMULATION_NAME = "S0-test"
 DEFAULT_COSMOLOGY_NAME = "desi-dr2-planck-act-mnufree"
 DEFAULT_TIME_LIMIT = "48:00:00"
 DEFAULT_NODES = 2
@@ -68,45 +68,27 @@ DEFAULT_NSTEPS_STR = f'{[1 for i in range(len(_DEFAULT_REDSHIFT_LIST_VALUES))]}'
 # Structure: 'preset_name': {param_key: value_for_preset}
 # These override the general defaults.
 SIMULATION_PRESETS = {
-    "lcone-small": {
+    # Active campaign presets with [1, 2, 5]x scaling pattern
+    # Node allocation follows scaling law: N = 2 * (nGrid/1400)^3
+    "S0-test": {
         "dBoxSize": 525,
         "nGrid": 700,
         "nodes": 1,
+        "tlimit": "12:00:00",  # Shorter time for testing
     },
-    "lcone-medium": {
-        # Uses general defaults if not specified
-        "dBoxSize": DEFAULT_BOXSIZE_MPC_H, # Example: explicitly setting default
-        "nGrid": DEFAULT_NGRID,
-        "nodes": DEFAULT_NODES,
-    },
-    "lcone-large": {
-        "dBoxSize": 2100,
-        "nGrid": 2800,
-        "nodes": 16,
-    },
-    
-    # Campaign-specific presets with [1, 2, 3, 5]x scaling pattern
-    # Node allocation follows scaling law: N = 2 * (nGrid/1400)^3
     "S0-validation": {
         "dBoxSize": 1050,
         "nGrid": 1400,
         "nodes": 2,  # 2 * (1400/1400)^3 = 2 * 1 = 2
         "gpupern": 4,
-        "tlimit": "12:00:00",
+        "tlimit": "48:00:00",
     },
     "S0-scaling": {
         "dBoxSize": 2100,
         "nGrid": 2800,
         "nodes": 16,  # 2 * (2800/1400)^3 = 2 * 8 = 16
         "gpupern": 4,
-        "tlimit": "24:00:00",
-    },
-    "S0-highres": {
-        "dBoxSize": 3150,
-        "nGrid": 4200,
-        "nodes": 54,  # 2 * (4200/1400)^3 = 2 * 27 = 54
-        "gpupern": 4,
-        "tlimit": "36:00:00",
+        "tlimit": "48:00:00",
     },
     "S0-production": {
         "dBoxSize": 5250,
@@ -201,64 +183,13 @@ COSMOLOGY_PRESETS.update({
 })
 
 # Add flagship campaign cosmology variants based on Planck 2018
-# These inherit from the planck18 preset and only override specific parameters
-_base_flagship_cosmology = COSMOLOGY_PRESETS["planck18"].copy()
-
-COSMOLOGY_PRESETS.update({
-    "flagship-lcdm": {
-        **_base_flagship_cosmology,
-        "description": "Flagship LCDM cosmology based on Planck 2018"
-    },
-    "flagship-wcdm": {
-        **_base_flagship_cosmology,
-        # Dark energy equation of state parameters (only parameters that differ)
-        "w0": -0.9,  # Slightly different from LCDM for flagship comparison
-        "wa": 0.1,   # Time-varying component
-        "description": "Flagship wCDM cosmology with evolving dark energy"
-    },
-    "flagship-phicdm": {
-        **_base_flagship_cosmology,
-        # Scalar field parameters (only parameters that differ)
-        "phi_model": "quintessence",
-        "phi_params": {
-            "potential": "exponential",
-            "lambda_phi": 0.1
-        },
-        "description": "Flagship phiCDM cosmology with scalar field dark energy"
-    },
-})
+# Note: flagship-* cosmology presets have been removed as they were not being used.
+# Only the base planck18 preset is kept for potential future use.
 
 # --- Campaign-Specific Presets ---
-# Additional preset configurations for campaign management
-CAMPAIGN_PRESETS = {
-    "validation": {
-        # Quick validation runs with small box sizes and low resolution
-        "dBoxSize": 100,
-        "nGrid": 128,
-        "nodes": 1,
-        "timelimit": "02:00:00",
-        "redshift_targets": "[3.0, 1.0, 0.0]",
-        "nSteps": "[1, 1, 1]",
-    },
-    "flagship": {
-        # High-resolution flagship simulation parameters
-        "dBoxSize": 2100,
-        "nGrid": 4096,
-        "nodes": 64,
-        "timelimit": "48:00:00",
-        "gpupern": 4,
-    },
-    "S0_campaign": {
-        # Specific parameters for the S0 campaign with July 1, 2025 deadline
-        "dBoxSize": 1050,
-        "nGrid": 2048,
-        "nodes": 32,
-        "timelimit": "36:00:00",
-        "gpupern": 4,
-        "email": PKDGRAVEMAIL,
-        "account": "cosmos",
-    },
-}
+# Note: CAMPAIGN_PRESETS have been removed as they were not being used.
+# All active simulation configurations are now managed through SIMULATION_PRESETS
+# and the campaign YAML files.
 
 # To derive ombh2 and omch2 for presets where omegam and omegab are given
 for preset_name, params in COSMOLOGY_PRESETS.items():
