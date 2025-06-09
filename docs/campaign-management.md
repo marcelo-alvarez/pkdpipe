@@ -52,34 +52,20 @@ variants:
 
 ### Available Cosmology Presets
 
-- **lcdm**: Standard LCDM cosmology based on DESI-DR2-Planck-ACT
-- **wcdm**: wCDM with evolving dark energy (w0=-0.9, wa=0.1)
-- **phicdm**: phiCDM with scalar field dark energy
-- **flagship-lcdm**: LCDM cosmology based on Planck 2018
-- **flagship-wcdm**: wCDM with evolving dark energy (w0=-0.9, wa=0.1)
-- **flagship-phicdm**: phiCDM with scalar field dark energy
-- **desi-dr2-planck-act-mnufree**: DESI DR2 cosmology
+- **lcdm**: Standard ΛCDM cosmology based on DESI-DR2-Planck-ACT
+- **wcdm**: wCDM with evolving dark energy (w0=-0.838, wa=-0.62)
+- **phicdm**: φCDM with scalar field dark energy
+- **desi-dr2-planck-act-mnufree**: DESI DR2 cosmology (base preset)
 - **euclid-flagship**: Euclid flagship cosmology
 - **planck18**: Planck 2018 cosmology
 
 ### Available Simulation Presets
 
 #### S0 Campaign Presets
-- **S0-validation**: 1050 Mpc/h box, 1400³ grid, 2 nodes, 12h
-- **S0-scaling**: 2100 Mpc/h box, 2800³ grid, 16 nodes, 24h
-- **S0-highres**: 3150 Mpc/h box, 4200³ grid, 54 nodes, 36h
+- **S0-validation**: 1050 Mpc/h box, 1400³ grid, 2 nodes, 48h
+- **S0-scaling**: 2100 Mpc/h box, 2800³ grid, 16 nodes, 48h
 - **S0-production**: 5250 Mpc/h box, 7000³ grid, 250 nodes, 48h
-
-#### Legacy Presets
-- **validation**: 1050 Mpc/h box, 1400³ grid, 2 nodes, 12h (deprecated, use S0-validation)
-- **scaling**: 2100 Mpc/h box, 2800³ grid, 16 nodes, 24h (deprecated, use S0-scaling)
-- **highres**: 3150 Mpc/h box, 4200³ grid, 54 nodes, 36h (deprecated, use S0-highres)
-- **production**: 5250 Mpc/h box, 7000³ grid, 250 nodes, 48h (deprecated, use S0-production)
-
-#### Light Cone Presets
-- **lcone-small**: 525 Mpc/h box, 700³ grid, 1 node
-- **lcone-medium**: 1050 Mpc/h box, 1400³ grid, 2 nodes
-- **lcone-large**: 2100 Mpc/h box, 2800³ grid, 16 nodes
+- **S0-test**: 525 Mpc/h box, 700³ grid, 1 node, 12h (test configuration)
 
 ## Command Line Interface
 
@@ -110,13 +96,13 @@ pkdpipe-campaign create campaigns/my-campaign.yaml
 pkdpipe-campaign submit /path/to/campaign/dir
 
 # Submit a specific variant
-pkdpipe-campaign submit /path/to/campaign/dir --variant lcdm-S0-validation
+pkdpipe-campaign submit /path/to/campaign/dir --variant lcdm-validation
 
 # Dry run (show what would be submitted without doing anything)
-pkdpipe-campaign submit /path/to/campaign/dir --variant lcdm-S0-validation --dry-run
+pkdpipe-campaign submit /path/to/campaign/dir --variant lcdm-validation --dry-run
 
 # No submit (create files and directories but don't submit to SLURM)
-pkdpipe-campaign submit /path/to/campaign/dir --variant lcdm-S0-validation --no-submit
+pkdpipe-campaign submit /path/to/campaign/dir --variant lcdm-validation --no-submit
 
 # Limit number of submissions
 pkdpipe-campaign submit /path/to/campaign/dir --max-submissions 2
@@ -180,14 +166,14 @@ from pkdpipe.campaign import CampaignConfig, SimulationVariant
 variants = [
     SimulationVariant(
         name="lcdm-test",
-        cosmology="flagship-lcdm",
-        resolution="flagship-validation",
+        cosmology="lcdm",
+        resolution="S0-validation",
         priority=100
     ),
     SimulationVariant(
         name="wcdm-test",
-        cosmology="flagship-wcdm", 
-        resolution="flagship-validation",
+        cosmology="wcdm", 
+        resolution="S0-validation",
         priority=90,
         dependencies=["lcdm-test"]
     )

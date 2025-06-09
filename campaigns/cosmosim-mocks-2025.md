@@ -37,8 +37,8 @@ All cosmology presets inherit from `desi-dr2-planck-act-mnufree` baseline parame
 |--------|----------|-----------|---------|--------------|
 | `S0-validation` | 1050 Mpc/h | 1400³ | Quick validation runs | 1x |
 | `S0-scaling` | 2100 Mpc/h | 2800³ | Scaling performance tests | 2x |
-| `S0-highres` | 3150 Mpc/h | 4200³ | High-resolution tests | 3x |
 | `S0-production` | 5250 Mpc/h | 7000³ | Full production simulations | 5x |
+| `S0-test` | 525 Mpc/h | 700³ | Testing and development | 0.5x |
 
 ## Simulation Variants
 
@@ -99,7 +99,6 @@ lcdm-validation
 - **Validation:** `lcdm-validation`
 - **Scaling:** `lcdm-scaling`
 - **Production:** `lcdm-production`, `wcdm-production`, `phicdm-production`
-- **Extended:** `lcdm-highres`
 
 **Redshift Range:** z=3.0 → z=0.0 with 39 carefully selected redshifts for comprehensive analysis.
 
