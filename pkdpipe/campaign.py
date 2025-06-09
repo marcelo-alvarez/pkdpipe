@@ -252,7 +252,7 @@ class Campaign:
             if self.config.output_dir:
                 params['rundir'] = str(self.output_dir / "runs")
             if self.config.scratch_dir:
-                params['scrdir'] = str(Path(self.config.scratch_dir) / self.config.name)
+                params['scrdir'] = str(Path(self.config.scratch_dir))
                 params['scratch'] = True
             
             # Create simulation instance
@@ -376,7 +376,11 @@ class Campaign:
             else:
                 # Set sbatch to True for automatic submission
                 sim.params['sbatch'] = True
-                sim.create()
+                job_id = sim.create()
+                
+                # Store job ID if submission was successful
+                if job_id:
+                    self.job_ids[variant_name] = job_id
                 
                 # Update status
                 self.simulation_status[variant_name] = SimulationStatus.QUEUED
