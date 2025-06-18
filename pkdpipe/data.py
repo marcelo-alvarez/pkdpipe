@@ -440,9 +440,53 @@ class Data:
         
         return data
 
-    def matter_power(self, bbox: List[List[float]], **kwargs) -> np.ndarray:
-        """Compute the matter power spectrum for the given bounding box."""
-        data = self.fetch_data(bbox, **kwargs)
-        # TODO: Implement power spectrum calculation
-        logger.warning("matter_power method not yet implemented")
-        return data
+    def matter_power(self, bbox: List[List[float]], ngrid: int = 256, n_devices: int = 1, 
+                    subtract_shot_noise: bool = False, **kwargs) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Compute matter power spectrum for given bounding box.
+        
+        Args:
+            bbox: Bounding box [[xmin,xmax], [ymin,ymax], [zmin,zmax]]
+            ngrid: Grid resolution for FFT
+            n_devices: Number of GPUs to use
+            subtract_shot_noise: Whether to subtract shot noise
+            **kwargs: Additional arguments passed to fetch_data
+            
+        Returns:
+            Tuple of (k_bins, power_spectrum, n_modes_per_bin)
+        """
+        from .power_spectrum import PowerSpectrumCalculator
+        
+        # Fetch particle data
+        particle_data = self.fetch_data(bbox, **kwargs)
+        
+        # Handle different return formats from fetch_data
+        if isinstance(particle_data, dict):
+            # Snapshot mode - use first box
+            particles = list(particle_data.values())[0]
+        else:
+            # Lightcone mode
+            particles = particle_data[0] if len(particle_data) > 0 else particle_data
+        
+        # Convert to format expected by PowerSpectrumCalculator
+        particle_dict = {
+            'x': particles['x'],
+            'y': particles['y'], 
+            'z': particles['z'],
+            'mass': np.ones(len(particles))  # Assume equal mass
+        }
+        
+        # Calculate box size from bbox
+        box_size = bbox[0][1] - bbox[0][0]  # Assume cubic box
+        
+        # Calculate power spectrum
+        calculator = PowerSpectrumCalculator(
+            ngrid=ngrid,
+            box_size=box_size,
+            n_devices=n_devices
+        )
+        
+        return calculator.calculate_power_spectrum(
+            particle_dict,
+            subtract_shot_noise=subtract_shot_noise
+        )
