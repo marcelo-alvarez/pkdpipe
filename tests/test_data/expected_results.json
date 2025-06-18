@@ -1,0 +1,74 @@
+{
+  "lightcone": {
+    "total_files": 4,
+    "particles_per_file": 20,
+    "file_pattern": "test_sim.00001.hpb.*",
+    "distance_range": [
+      0.1,
+      4.0
+    ],
+    "test_bbox": [
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -2.0,
+        2.0
+      ]
+    ]
+  },
+  "snapshots": {
+    "total_files": 3,
+    "particles_per_file": 15,
+    "file_pattern": "test_sim.00001.*",
+    "box_size": 1000.0,
+    "test_bbox": [
+      [
+        -200,
+        200
+      ],
+      [
+        -200,
+        200
+      ],
+      [
+        -200,
+        200
+      ]
+    ]
+  },
+  "halos": {
+    "total_files": 3,
+    "halos_per_file": 10,
+    "file_pattern": "test_sim.00001.fofstats.*",
+    "mass_range": [
+      10,
+      5000
+    ],
+    "test_bbox": [
+      [
+        -300,
+        300
+      ],
+      [
+        -300,
+        300
+      ],
+      [
+        -300,
+        300
+      ]
+    ]
+  },
+  "parameter_info": {
+    "param_file": "/global/cfs/cdirs/cosmosim/slac/malvarez/pkdgrav3/pipeline/pkdpipe/tests/test_data/test_sim.par",
+    "transfer_file": "/global/cfs/cdirs/cosmosim/slac/malvarez/pkdgrav3/pipeline/pkdpipe/tests/test_data/test_transfer.dat",
+    "box_size": 1000.0,
+    "ngrid": 128
+  }
+}
