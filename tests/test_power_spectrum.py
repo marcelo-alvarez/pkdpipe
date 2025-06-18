@@ -41,7 +41,8 @@ except (ImportError, RuntimeError) as e:
     JAX_AVAILABLE = False
     MULTI_GPU_AVAILABLE = False
 
-from pkdpipe.power_spectrum import PowerSpectrumCalculator, ParticleGridder
+from pkdpipe.power_spectrum import PowerSpectrumCalculator
+from pkdpipe.particle_gridder import ParticleGridder
 from pkdpipe.data import Data
 
 
