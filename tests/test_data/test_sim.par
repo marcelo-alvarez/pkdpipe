@@ -1,0 +1,31 @@
+# Test parameter file for pkdpipe I/O testing
+achOutName      = "/global/cfs/cdirs/cosmosim/slac/malvarez/pkdgrav3/pipeline/pkdpipe/tests/test_data/output/test_sim"
+achTfFile       = "/global/cfs/cdirs/cosmosim/slac/malvarez/pkdgrav3/pipeline/pkdpipe/tests/test_data/test_transfer.dat"
+
+# Lightcone
+bLightCone          = 1
+bLightConeParticles = 1
+dRedshiftLCP        = 0.5
+nSideHealpix       = 4    # Small for testing
+sqdegLCP           = -1
+hLCP               = [1, 0, 0]
+
+# Simulation box
+dBoxSize        = 1000    # Mpc/h
+nGrid           = 128     # Small for testing
+iLPT            = 2
+iSeed           = 314159
+dRedFrom        = 5
+bWriteIC        = False
+
+# Cosmology  
+h               = 0.7
+dOmega0         = 0.3
+dLambda         = 0.7
+dSigma8         = 0.8
+dSpectral       = 0.96
+
+iStartStep      = 0
+nSteps          = [1]
+dRedTo          = 0.0
+bLightCone      = 1
