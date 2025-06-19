@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 PKDGrav3 data interface - Refactored for better maintainability and robustness.
 
@@ -313,6 +314,10 @@ class DataProcessor:
         
         # Extract and reshape selected data
         try:
+            # Check if any particles pass the mask
+            if not np.any(mask):
+                return np.array([]).reshape(len(vars), 0)
+                
             result = np.concatenate([cdata[var][mask] for var in vars])
             return result.reshape((len(vars), -1))
         except KeyError as e:
@@ -340,7 +345,8 @@ class DataProcessor:
         
         for shift in shifts:
             sdata = DataProcessor.cull_shift_reshape(vars, cdata, shift, bounds)
-            data = np.concatenate((data, sdata), axis=1)
+            if sdata.size > 0:
+                data = np.concatenate((data, sdata), axis=1)
         
         return data
 
@@ -384,6 +390,41 @@ class FileReader:
         except (IOError, ValueError) as e:
             logger.warning(f"Failed to read {filepath}: {e}")
             return np.array([], dtype=dtype)
+    
+    @staticmethod
+    def find_files(namespace, step, format_info = None, max_search = 1000):
+        """Find all chunk files for a given step.
+        
+        Args:
+            namespace: Base filename namespace
+            step: Time step number
+            format_info: File format information (optional, defaults to no extension)
+            max_search: Maximum number of chunks to search for
+            
+        Returns:
+            List of chunk numbers that have existing files
+        """
+        available_files = []
+        chunk = 0
+        
+        while chunk < max_search:
+            # Use get_filename to handle both extension and no-extension formats
+            if format_info is not None:
+                filepath = FileReader.get_filename(namespace, format_info, chunk, step)
+            else:
+                # Fallback for backward compatibility (no extension format)
+                if chunk == 0:
+                    filepath = Path(f"{namespace}.{step:05d}")
+                else:
+                    filepath = Path(f"{namespace}.{step:05d}.{chunk}")
+            
+            if filepath.exists():
+                available_files.append(chunk)
+                chunk += 1
+            else:
+                break
+        
+        return available_files
 
 
 class Data:
@@ -658,16 +699,18 @@ class Data:
         slurm_info = _get_slurm_info()
         
         # Detect available chunk files for this step
+        max_search = max(slurm_info['ntasks'] * slurm_info['cpus_per_task'], 100)
         available_files = []
         chunk = 0
-        max_search = max(slurm_info['ntasks'] * slurm_info['cpus_per_task'], 100)
-        
         while chunk < max_search:
-            filepath = FileReader.get_filename(self.params.namespace, format_info, chunk, step)
-            if filepath.exists():
-                available_files.append(chunk)
-                chunk += 1
-            else:
+            try:
+                filepath = FileReader.get_filename(self.params.namespace, format_info, chunk, step)
+                if filepath.exists():
+                    available_files.append(chunk)
+                    chunk += 1
+                else:
+                    break
+            except:
                 break
         
         n_files = len(available_files)
@@ -789,8 +832,11 @@ class Data:
 
     def fetch_data(self, bbox, dataset = 'xvp', 
                    filetype = 'lcp', lightcone = False, 
-                   redshifts = [0]):
-        """Fetch particle data for the specified bounding box and parameters.
+                   redshifts = [0], force_streaming = False):
+        """Fetch particle data with automatic memory optimization.
+        
+        This method automatically determines whether to load all particles into memory
+        or use streaming/chunked processing based on estimated memory requirements.
         
         Args:
             bbox: Bounding box [[xmin,xmax], [ymin,ymax], [zmin,zmax]]
@@ -798,9 +844,10 @@ class Data:
             filetype: File format ('lcp', 'tps', 'fof')
             lightcone: Whether to use lightcone mode
             redshifts: List of redshifts to fetch (for non-lightcone mode)
+            force_streaming: Force streaming mode regardless of memory estimate
             
         Returns:
-            Data array or dictionary of data arrays
+            Data array/dictionary OR self (for streaming mode)
             
         Raises:
             ValueError: If dataset or filetype is invalid
@@ -819,6 +866,23 @@ class Data:
         _log_info(f"Lightcone: {lightcone}, Variables: {vars}")
         _log_info(f"Bounding box: {bbox}")
         
+        # Store parameters for potential streaming mode
+        self._streaming_params = {
+            'bbox': bbox, 'dataset': dataset, 'filetype': filetype,
+            'lightcone': lightcone, 'redshifts': redshifts
+        }
+        
+        # Automatic memory-based mode selection
+        if not force_streaming and not lightcone:
+            should_stream = self._should_use_streaming_mode(dataset, filetype, redshifts)
+            if should_stream:
+                _log_info("Large dataset detected - using memory-efficient streaming mode")
+                return self  # Return self to enable streaming interface
+        elif force_streaming:
+            _log_info("Streaming mode forced by user")
+            return self
+        
+        # Standard mode: load all data into memory
         if lightcone:
             return self._fetch_lightcone_data(bbox, dprops, format_info, vars)
         else:
@@ -923,6 +987,270 @@ class Data:
             particle_dict,
             subtract_shot_noise=subtract_shot_noise
         )
+
+    def fetch_data_chunked(self, bbox=None, dataset='xvp', filetype='tps', 
+                          lightcone=False, redshifts=[0.0], chunk_size_gb=2.0):
+        """
+        Generator that yields particle data in chunks for memory-efficient processing.
+        
+        If no parameters provided, uses stored streaming parameters from fetch_data call.
+        """
+        # Use stored parameters if available
+        if hasattr(self, '_streaming_params') and bbox is None:
+            params = self._streaming_params
+            bbox = params['bbox']
+            dataset = params['dataset'] 
+            filetype = params['filetype']
+            lightcone = params['lightcone']
+            redshifts = params['redshifts']
+        
+        # Delegate to implementation
+        yield from self._fetch_data_chunked_impl(bbox, dataset, filetype, lightcone, redshifts, chunk_size_gb)
+    
+    def _fetch_data_chunked_impl(self, bbox=None, dataset='xvp', filetype='tps', 
+                          lightcone=False, redshifts=[0.0], chunk_size_gb=2.0):
+        """Implementation of chunked data fetching."""
+        # Validate inputs
+        if dataset not in pkds.properties:
+            raise ValueError(f"Unknown dataset: {dataset}")
+        if filetype not in pkds.fileformats:
+            raise ValueError(f"Unknown filetype: {filetype}")
+        
+        if lightcone:
+            raise NotImplementedError("Chunked lightcone reading not yet implemented")
+        
+        dprops = pkds.properties[dataset]
+        format_info = pkds.fileformats[filetype]
+        vars = dprops['vars']
+        
+        _log_info(f"Starting chunked data fetch: {dataset} with {filetype} format")
+        _log_info(f"Target chunk size: {chunk_size_gb:.1f} GB")
+        
+        # Use existing SLURM-aware chunking infrastructure
+        slurm_info = _get_slurm_info()
+        
+        for redshift in redshifts:
+            step = self._find_nearest_step(redshift)
+            
+            # Set up chunked reading parameters
+            bbox_expanded = self._expand_bbox_for_lightcone(bbox, format_info, step, lightcone)
+            
+            # Calculate chunk parameters based on desired memory usage
+            record_size = format_info['dsize']  # bytes per particle
+            target_chunk_bytes = int(chunk_size_gb * 1024**3)
+            particles_per_chunk = target_chunk_bytes // record_size
+            
+            # Use internal chunking method but yield results instead of concatenating
+            yield from self._fetch_chunks_generator(
+                step, bbox_expanded, dprops, format_info, lightcone, redshift,
+                vars, particles_per_chunk
+            )
+    
+    def _fetch_chunks_generator(self, step, bbox, dprops, format_info, lightcone, 
+                               redshift, vars, particles_per_chunk):
+        """Generator that yields individual particle chunks."""
+        slurm_info = _get_slurm_info()
+        procid = slurm_info['procid']
+        
+        # Calculate distance bounds (needed for DataProcessor.cull_tile_reshape)
+        zvals = self.params.zoutput
+        if step >= len(zvals) or step < 1:
+            _log_info(f"Invalid step {step}, must be between 1 and {len(zvals)-1}")
+            return
+            
+        z1, z2 = zvals[step], zvals[step - 1]
+        chi1, chi2 = self.chiofz(z1), self.chiofz(z2)
+        r1, r2 = chi1 / self.params.boxsize, chi2 / self.params.boxsize
+        
+        # Get file information
+        filename = FileReader.get_filename(self.params.namespace, format_info, 0, step)  # chunk 0 for single file
+        
+        if not os.path.exists(filename):
+            _log_info(f"No data file found for step {step}: {filename}")
+            return
+        
+        # Read file metadata
+        file_size = os.path.getsize(filename)
+        record_size = format_info['dsize']
+        header_size = format_info.get('hsize', 0)
+        
+        total_particles = (file_size - header_size) // record_size
+        total_chunks = (total_particles + particles_per_chunk - 1) // particles_per_chunk
+        
+        _log_info(f"File: {filename} ({file_size/(1024**3):.1f} GB)")
+        _log_info(f"Total particles: {total_particles:,}, chunks: {total_chunks}")
+        
+        # Count chunks assigned to this SLURM process
+        chunks_assigned = 0
+        for chunk_idx in range(total_chunks):
+            # SLURM-level distribution
+            if slurm_info['is_slurm'] and chunk_idx % slurm_info['ntasks'] != procid:
+                continue
+            chunks_assigned += 1
+        
+        _log_info(f"Process {procid}: assigned {chunks_assigned} chunks out of {total_chunks}")
+        
+        chunk_count = 0
+        for chunk_idx in range(total_chunks):
+            # SLURM-level distribution
+            if slurm_info['is_slurm'] and chunk_idx % slurm_info['ntasks'] != procid:
+                continue
+            chunk_count += 1
+            
+            # Show progress every few chunks
+            if procid == 0 and (chunk_count == 1 or chunk_count % 3 == 0):
+                print(f"Process {procid}: Processing chunk {chunk_idx} ({chunk_count}/{chunks_assigned})", flush=True)
+            
+            # Calculate chunk boundaries
+            start_particle = chunk_idx * particles_per_chunk
+            end_particle = min(start_particle + particles_per_chunk, total_particles)
+            chunk_particles = end_particle - start_particle
+            
+            if chunk_particles <= 0:
+                continue
+            
+            # Read chunk
+            offset = header_size + start_particle * record_size
+            
+            if procid == 0 and chunk_count == 1:
+                print(f"Process {procid}: Reading {chunk_particles:,} particles from offset {offset}")
+                
+            chunk_data = FileReader.read_chunk(filename, format_info['dtype'], 
+                                             offset, chunk_particles)
+            
+            if procid == 0 and chunk_count == 1:
+                print(f"Process {procid}: Read complete, processing chunk...")
+                
+            # Process chunk (apply bbox filtering, coordinate transforms, etc.)
+            # Initialize empty data array with correct shape for concatenation
+            empty_data = np.array([]).reshape(len(vars), 0)
+            processed_chunk = DataProcessor.cull_tile_reshape(
+                empty_data, chunk_data, vars, bbox, 
+                r1, r2, format_info, lightcone
+            )
+            
+            if procid == 0 and chunk_count == 1:
+                print(f"Process {procid}: Chunk processed, yielding {processed_chunk.shape[1]} particles")
+            # Skip empty chunks
+            if processed_chunk.shape[1] == 0:
+                continue
+                
+            # Convert to particle dictionary format
+            particle_dict = {}
+            for i, var in enumerate(['x', 'y', 'z']):  # Only coordinates for power spectrum
+                if i < processed_chunk.shape[0]:
+                    particle_dict[var] = processed_chunk[i, :]
+                    
+            # Add mass array (equal mass particles)
+            particle_dict['mass'] = np.ones(processed_chunk.shape[1])
+            
+            yield particle_dict
+
+    def _should_use_streaming_mode(self, dataset, filetype, redshifts, memory_threshold_gb=15.0):
+        """
+        Determine if streaming mode should be used based on estimated memory requirements.
+        
+        Args:
+            dataset: Dataset type
+            filetype: File format
+            redshifts: List of redshifts
+            memory_threshold_gb: Memory threshold for switching to streaming
+            
+        Returns:
+            True if streaming should be used, False otherwise
+        """
+        try:
+            # Get format info for this filetype
+            format_info = pkds.fileformats[filetype]
+            
+            # Estimate total memory across all files for all redshifts
+            total_memory_gb = 0
+            
+            for redshift in redshifts:
+                step = self._find_nearest_step(redshift)
+                
+                # Find files for this step
+                # Find files for this step - simulate find_files using file existence check
+                files = []
+                chunk = 0
+                max_search = 100  # reasonable limit
+                while chunk < max_search:
+                    try:
+                        file_path = FileReader.get_filename(self.params.namespace, format_info, chunk, step)
+                        if file_path.exists():
+                            files.append(chunk)
+                            chunk += 1
+                        else:
+                            break
+                    except:
+                        break
+                
+                if len(files) > 0:
+                    # For single file case (most common), estimate from file size
+                    if len(files) == 1:
+                        try:
+                            file_path = FileReader.get_filename(self.params.namespace, format_info, 0, step)
+                            if _is_master_process():
+                                _log_info(f"Checking file path: {file_path}")
+                                _log_info(f"File exists: {os.path.exists(file_path)}")
+                            
+                            if os.path.exists(file_path):
+                                file_size = os.path.getsize(file_path)
+                                
+                                # Estimate particles and memory
+                                record_size = format_info['dsize']
+                                header_size = format_info.get('hsize', 0)
+                                total_particles = (file_size - header_size) // record_size
+                                
+                                # Memory for particles (6 fields for 'xvp', float64)
+                                n_fields = len(pkds.properties[dataset]['vars'])
+                                particle_memory_gb = (total_particles * n_fields * 8) / (1024**3)
+                                total_memory_gb += particle_memory_gb
+                                
+                                if _is_master_process():
+                                    _log_info(f"Memory estimate for step {step}: {particle_memory_gb:.1f} GB")
+                                    _log_info(f"  File: {file_path} ({file_size/(1024**3):.1f} GB)")
+                                    _log_info(f"  Particles: {total_particles:,}")
+                            else:
+                                if _is_master_process():
+                                    _log_info(f"File not found: {file_path}")
+                        except Exception as e:
+                            if _is_master_process():
+                                _log_info(f"Could not estimate memory for step {step}: {e}")
+                                import traceback
+                                _log_info(f"Traceback: {traceback.format_exc()}")
+                    else:
+                        # Multiple files - estimate based on file count and typical size
+                        # This is a rough estimate, might need refinement
+                        if _is_master_process():
+                            _log_info(f"Multiple files ({len(files)}) for step {step} - estimating...")
+                        total_memory_gb += len(files) * 2.0  # Rough estimate: 2GB per file
+            
+            if _is_master_process():
+                _log_info(f"Total estimated memory: {total_memory_gb:.1f} GB")
+                _log_info(f"Memory threshold: {memory_threshold_gb:.1f} GB")
+                
+            return total_memory_gb > memory_threshold_gb
+            
+        except Exception as e:
+            if _is_master_process():
+                _log_info(f"Warning: Could not estimate memory requirements: {e}")
+            # Conservative fallback: use streaming for any non-trivial dataset
+            return True
+
+    def _find_nearest_step(self, redshift):
+        """Find the step number closest to the given redshift."""
+        zvals = np.array(self.params.zoutput)
+        return np.argmin(np.abs(redshift - zvals))
+
+    def _expand_bbox_for_lightcone(self, bbox, format_info, step, lightcone):
+        """Expand bounding box for lightcone mode (no-op for snapshot mode)."""
+        # For snapshot mode, just return the original bbox
+        if not lightcone:
+            return bbox
+        # For lightcone mode, would need expansion logic here
+        # For now, just return as-is since we don't support lightcone streaming yet
+        return bbox
 
     def get_simulation_parameters(self):
         """
