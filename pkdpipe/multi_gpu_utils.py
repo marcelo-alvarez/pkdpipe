@@ -201,6 +201,34 @@ def create_full_k_grid(ngrid: int, box_size: float) -> np.ndarray:
     return k_mag
 
 
+def create_slab_k_grid(ngrid: int, box_size: float, y_min: int, y_max: int) -> np.ndarray:
+    """
+    Create k-space grid for a spatial slab in distributed mode.
+    
+    Args:
+        ngrid: Full grid resolution (e.g., 512)
+        box_size: Simulation box size in Mpc/h
+        y_min: Start index of slab in y-direction
+        y_max: End index of slab in y-direction
+        
+    Returns:
+        k-magnitude grid for the slab portion
+    """
+    fundamental_mode = 2 * np.pi / box_size
+    slab_height = y_max - y_min
+    
+    # Create frequency grids
+    kx = np.fft.fftfreq(ngrid, d=1.0) * ngrid * fundamental_mode
+    ky = np.fft.fftfreq(slab_height, d=1.0) * ngrid * fundamental_mode  # Note: still use ngrid for proper scaling
+    kz = np.fft.rfftfreq(ngrid, d=1.0) * ngrid * fundamental_mode
+    
+    # Create 3D grid for the slab
+    KX, KY, KZ = np.meshgrid(kx, ky, kz, indexing='ij')
+    k_grid = np.sqrt(KX**2 + KY**2 + KZ**2)
+    
+    return k_grid
+
+
 def bin_power_spectrum_distributed(k_grid: np.ndarray, power_grid: np.ndarray, 
                                  k_bins: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
