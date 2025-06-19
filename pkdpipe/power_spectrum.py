@@ -73,6 +73,10 @@ class PowerSpectrumCalculator:
         Raises:
             ValueError: If parameters are invalid
         """
+        # Initialize JAX distributed mode if needed BEFORE any other operations
+        from .multi_gpu_utils import is_distributed_mode
+        is_distributed = is_distributed_mode()  # This will initialize JAX distributed mode
+        
         if ngrid <= 0:
             raise ValueError("Grid size must be positive")
         if box_size <= 0:
@@ -92,6 +96,27 @@ class PowerSpectrumCalculator:
             self.k_bins = default_k_bins(ngrid, box_size)
         else:
             self.k_bins = k_bins
+        
+        # Show initialization info only from master process
+        process_id = 0
+        if is_distributed:
+            try:
+                import jax
+                process_id = jax.process_index()
+            except:
+                pass
+        
+        if process_id == 0:
+            print(f"PowerSpectrumCalculator initialized:")
+            print(f"  Grid size: {ngrid}³")
+            print(f"  Box size: {box_size:.1f} Mpc/h")
+            print(f"  Cell size: {box_size/ngrid:.3f} Mpc/h")
+            print(f"  k-bins: {len(self.k_bins)-1}")
+            print(f"  k-range: {self.k_bins[0]:.6f} to {self.k_bins[-1]:.6f} h/Mpc")
+            if is_distributed:
+                print(f"  JAX Distributed Mode: ENABLED ({jax.process_count()} processes)")
+            else:
+                print(f"  JAX Distributed Mode: DISABLED (using {n_devices} device(s))")
     
     def calculate_power_spectrum(self, particles: Dict[str, np.ndarray],
                                subtract_shot_noise: bool = False,
