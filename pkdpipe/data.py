@@ -532,31 +532,16 @@ class Data:
                 ncum = (offset - 32 + chunksize) // dsize
                 gbread = (offset - 32 + chunksize) / 1024**3
                 
-                # Basic debug - always print from process 0 to verify we reach this code
-                slurm_procid = int(os.environ.get('SLURM_PROCID', '0'))
-                if chunk == 1 and slurm_procid == 0:
-                    print(f"PROGRESS DEBUG: Reached tipsy progress section, chunk={chunk}, task_id={task_id}")
-                    print(f"PROGRESS DEBUG: is_slurm_chunking={is_slurm_chunking}, _is_master_process()={_is_master_process()}")
-                    sys.stdout.flush()
-                
-                # Debug: Always print first few chunks to verify we're getting here
-                if chunk <= 3 and _is_master_process():
-                    print(f"DEBUG: Chunk {chunk}, offset {offset}, chunksize {chunksize}, gbread {gbread:.2f}")
-                
-                # Progress reporting for tipsy format - show every 10th chunk to avoid spam
-                if is_slurm_chunking and _is_master_process() and (chunk % 10 == 1 or chunk <= 3):
+                # Progress reporting for tipsy format
+                if is_slurm_chunking and _is_master_process():
                     try:
                         file_size = filepath.stat().st_size if filepath.exists() else 100 * 1024**3
                         progress_pct = min(100, (offset + chunksize) / file_size * 100)
                         print(f"SLURM process {task_id}: {progress_pct:.1f}% complete, {gbread:.1f} GB read, {ncum:,} particles", flush=True)
                     except Exception as e:
-                        print(f"SLURM process {task_id}: {gbread:.1f} GB read, {ncum:,} particles (error: {e})", flush=True)
-                elif not is_slurm_chunking and self.verbose and chunk % 10 == 1:
+                        print(f"SLURM process {task_id}: {gbread:.1f} GB read, {ncum:,} particles", flush=True)
+                elif not is_slurm_chunking and self.verbose:
                     print(f"Local task {task_id:>3d} read {ncum:>12} ({gbread:0.2f} GB)", flush=True)
-                
-                # Debug output (verbose mode only)
-                if self.verbose and slurm_info['is_slurm']:
-                    _log_info(f"DEBUG: SLURM process {slurm_info['procid']} chunk {chunk-1} at offset {offset}, read {chunksize} bytes")
                 
                 offset += chunksize
             
