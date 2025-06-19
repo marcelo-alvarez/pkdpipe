@@ -62,9 +62,13 @@ class ParticleGridder:
         Raises:
             ValueError: If particles are outside simulation box or invalid format
         """
-        # Validate input
+        # Handle empty particles case
         if len(particles['x']) == 0:
-            raise ValueError("No particles provided")
+            if n_devices == 1:
+                return np.zeros((self.ngrid, self.ngrid, self.ngrid), dtype=np.float64)
+            else:
+                return [np.zeros((self.ngrid, self.ngrid//n_devices, self.ngrid), dtype=np.float64) 
+                        for _ in range(n_devices)]
         
         # Check that all arrays have same length
         n_particles = len(particles['x'])

@@ -73,9 +73,12 @@ class PowerSpectrumCalculator:
         Raises:
             ValueError: If parameters are invalid
         """
+        print("DEBUG: PowerSpectrumCalculator.__init__ called - code is updated!")
         # Initialize JAX distributed mode if needed BEFORE any other operations
         from .multi_gpu_utils import is_distributed_mode
+        print("DEBUG: About to call is_distributed_mode()")
         is_distributed = is_distributed_mode()  # This will initialize JAX distributed mode
+        print(f"DEBUG: is_distributed_mode() returned: {is_distributed}")
         
         if ngrid <= 0:
             raise ValueError("Grid size must be positive")
@@ -118,16 +121,17 @@ class PowerSpectrumCalculator:
             else:
                 print(f"  JAX Distributed Mode: DISABLED (using {n_devices} device(s))")
     
-    def calculate_power_spectrum(self, particles: Dict[str, np.ndarray],
+    def calculate_power_spectrum(self, particles_or_data_reader,
                                subtract_shot_noise: bool = False,
                                assignment: str = 'cic') -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Calculate power spectrum from particle distribution.
+        Calculate power spectrum from particle distribution or streaming data.
         
         For random particles, the power spectrum should equal the shot noise P_shot = V/N.
         
         Args:
-            particles: Dictionary with particle data ('x', 'y', 'z', 'mass')
+            particles_or_data_reader: Either particle dictionary ('x', 'y', 'z', 'mass') 
+                                    or Data object for streaming processing
             subtract_shot_noise: Whether to subtract shot noise
             assignment: Mass assignment scheme ('cic' or 'ngp')
             
@@ -137,6 +141,13 @@ class PowerSpectrumCalculator:
         Raises:
             ValueError: If particle data is invalid
         """
+        # Check if input is a Data object for streaming
+        if hasattr(particles_or_data_reader, 'fetch_data_chunked'):
+            return self._calculate_streaming(particles_or_data_reader, subtract_shot_noise, assignment)
+        
+        # Standard particle dictionary path
+        particles = particles_or_data_reader
+        
         # Validate input
         self._validate_particles(particles)
         
@@ -284,6 +295,196 @@ class PowerSpectrumCalculator:
         return self._finalize_power_spectrum(k_binned, power_binned, n_modes,
                                            subtract_shot_noise, len(particles['x']))
     
+    def _calculate_streaming(self, data_reader, subtract_shot_noise: bool,
+                           assignment: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Calculate power spectrum using streaming/chunked data processing.
+        
+        This method processes particle data in chunks to reduce memory usage,
+        accumulating particles into a density grid without loading all particles
+        into memory simultaneously.
+        
+        Args:
+            data_reader: Data object with chunked reading capability
+            subtract_shot_noise: Whether to subtract shot noise
+            assignment: Mass assignment scheme ('cic' or 'ngp')
+            
+        Returns:
+            Tuple of (k_bins, power_spectrum, n_modes_per_bin)
+        """
+        print("Using streaming power spectrum calculation for memory efficiency")
+        
+        # Initialize density grid based on execution mode
+        if is_distributed_mode():
+            return self._calculate_streaming_distributed(data_reader, subtract_shot_noise, assignment)
+        else:
+            return self._calculate_streaming_single(data_reader, subtract_shot_noise, assignment)
+    
+    def _calculate_streaming_single(self, data_reader, subtract_shot_noise: bool,
+                                  assignment: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Streaming calculation for single process mode."""
+        # Initialize density grid
+        density_grid = np.zeros((self.ngrid, self.ngrid, self.ngrid), dtype=np.float64)
+        gridder = ParticleGridder(self.ngrid, self.box_size, assignment)
+        total_particles = 0
+        
+        print(f"Processing particles in chunks...")
+        chunk_count = 0
+        
+        # Process particles chunk by chunk
+        for chunk_particles in data_reader.fetch_data_chunked():
+            chunk_count += 1
+            n_chunk_particles = len(chunk_particles['x'])
+            total_particles += n_chunk_particles
+            
+            # Grid particles from this chunk and accumulate
+            chunk_density = gridder.particles_to_grid(chunk_particles, n_devices=1)
+            density_grid += chunk_density
+            
+            print(f"  Processed chunk {chunk_count}: {n_chunk_particles:,} particles")
+        
+        print(f"Total particles processed: {total_particles:,}")
+        
+        # Calculate mean density and density contrast
+        mean_density = density_grid.mean()
+        if mean_density <= 0:
+            raise ValueError("Mean density is zero - check particle data")
+        
+        delta_grid = (density_grid - mean_density) / mean_density
+        
+        # Store diagnostics
+        self._store_density_diagnostics(density_grid, delta_grid, total_particles)
+        
+        # Continue with standard power spectrum calculation
+        if JAX_AVAILABLE:
+            delta_k = jnp.fft.rfftn(delta_grid)
+            power_3d = jnp.abs(delta_k)**2 * (self.volume / self.ngrid**6)
+            power_3d_np = np.array(power_3d)
+        else:
+            delta_k = np.fft.rfftn(delta_grid)
+            power_3d_np = np.abs(delta_k)**2 * (self.volume / self.ngrid**6)
+        
+        # Create k-grid and apply corrections
+        k_grid = create_full_k_grid(self.ngrid, self.box_size)
+        power_3d_corrected = self._apply_window_correction(power_3d_np, k_grid, assignment)
+        
+        # Bin power spectrum
+        k_binned, power_binned, n_modes = bin_power_spectrum_single(
+            k_grid, power_3d_corrected, self.k_bins
+        )
+        
+        return self._finalize_power_spectrum(k_binned, power_binned, n_modes,
+                                           subtract_shot_noise, total_particles)
+    
+    def _calculate_streaming_distributed(self, data_reader, subtract_shot_noise: bool,
+                                       assignment: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Calculate power spectrum using streaming/chunked data processing in distributed mode.
+        
+        Each SLURM process reads its assigned chunks and accumulates particles into a density grid.
+        """
+        # Initialize density grid
+        density_grid = np.zeros((self.ngrid, self.ngrid, self.ngrid), dtype=np.float64)
+        gridder = ParticleGridder(self.ngrid, self.box_size, assignment)
+        total_particles = 0
+        
+        # Get process ID for logging
+        process_id = 0
+        try:
+            import jax
+            process_id = jax.process_index()
+        except:
+            pass
+        
+        print(f"Processing particles in chunks (distributed mode)...")
+        chunk_count = 0
+        
+        # Process particles chunk by chunk
+        try:
+            print(f"Starting chunk processing for process {process_id}...")
+            
+            for chunk_particles in data_reader.fetch_data_chunked():
+                chunk_count += 1
+                n_chunk_particles = len(chunk_particles.get('x', []))
+                total_particles += n_chunk_particles
+                
+                if n_chunk_particles == 0:
+                    continue
+                
+                # Grid particles from this chunk and accumulate
+                try:
+                    chunk_density = gridder.particles_to_grid(chunk_particles, n_devices=1)
+                    density_grid += chunk_density
+                except Exception as e:
+                    print(f"  ERROR in particles_to_grid: {e}")
+                    print(f"  Chunk {chunk_count} data types:")
+                    for key, val in chunk_particles.items():
+                        print(f"    {key}: {type(val)}, shape: {getattr(val, 'shape', 'N/A')}")
+                    raise
+                
+                if process_id == 0:
+                    print(f"  Process {process_id} processed chunk {chunk_count}: {n_chunk_particles:,} particles")
+        
+        except Exception as e:
+            print(f"ERROR in chunk processing: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+        
+        if process_id == 0:
+            print(f"Process {process_id} total particles: {total_particles:,}")
+        
+        # Handle case where this process gets no particles
+        if total_particles == 0:
+            if process_id == 0:
+                print(f"Process {process_id} received no particles - using empty contribution")
+            # Return empty results for this process 
+            k_bins_empty = self.k_bins[:-1]
+            power_empty = np.zeros(len(k_bins_empty))
+            n_modes_empty = np.zeros(len(k_bins_empty), dtype=int)
+            return k_bins_empty, power_empty, n_modes_empty
+        
+        # Calculate mean density (local to each process)
+        mean_density = density_grid.mean()
+        if mean_density <= 0:
+            raise ValueError("Mean density is zero - check particle data")
+        
+        delta_grid = (density_grid - mean_density) / mean_density
+        
+        # Store diagnostics
+        try:
+            self._store_density_diagnostics(density_grid, delta_grid, total_particles)
+        except Exception as e:
+            print(f"ERROR in _store_density_diagnostics: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+        
+        # Distributed FFT (returns only local k-space slice)
+        delta_k_local = fft(delta_grid, direction='r2c')
+        
+        # Calculate local power spectrum
+        power_3d_local = jnp.abs(delta_k_local)**2 * (self.volume / self.ngrid**6)
+        power_3d_np = np.array(power_3d_local)
+        
+        # Create local k-grid and apply corrections
+        k_grid_local = create_local_k_grid(self.ngrid, self.box_size)
+        power_3d_corrected = self._apply_window_correction(power_3d_np, k_grid_local, assignment)
+        
+        # Bin and reduce across processes
+        try:
+            k_binned, power_binned, n_modes = bin_power_spectrum_distributed(
+                k_grid_local, power_3d_corrected, self.k_bins
+            )
+        except Exception as e:
+            print(f"ERROR in bin_power_spectrum_distributed: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+        
+        return self._finalize_power_spectrum(k_binned, power_binned, n_modes,
+                                           subtract_shot_noise, total_particles)
+    
     def _store_density_diagnostics(self, density_data: np.ndarray, 
                                  delta_data: np.ndarray, n_particles: int) -> None:
         """Store density field diagnostics for analysis."""
@@ -418,3 +619,70 @@ class PowerSpectrumCalculator:
             return self._last_density_stats.copy()
         else:
             return {}
+    
+    def _should_use_streaming(self, particles: Dict[str, np.ndarray]) -> bool:
+        """
+        Determine if streaming processing should be used based on memory requirements.
+        
+        Args:
+            particles: Particle data dictionary
+            
+        Returns:
+            True if streaming should be used, False otherwise
+        """
+        n_particles = len(particles['x'])
+        
+        # Estimate memory usage
+        # Particles: 4 fields × 8 bytes (assuming float64) per particle
+        particle_memory_gb = (n_particles * 4 * 8) / (1024**3)
+        
+        # Grid memory: ngrid³ × 8 bytes (float64)
+        grid_memory_gb = (self.ngrid**3 * 8) / (1024**3)
+        
+        # Estimate total memory needed for standard calculation
+        total_memory_gb = particle_memory_gb + grid_memory_gb * 2  # density + delta grids
+        
+        # Use streaming if estimated memory > 10GB (conservative threshold)
+        memory_threshold_gb = 10.0
+        
+        if total_memory_gb > memory_threshold_gb:
+            print(f"Memory estimate: {total_memory_gb:.1f} GB (particles: {particle_memory_gb:.1f} GB, grids: {grid_memory_gb*2:.1f} GB)")
+            print(f"Exceeds threshold of {memory_threshold_gb} GB - using streaming mode")
+            return True
+        
+        return False
+
+
+class ParticleDataReader:
+    """
+    Simple wrapper to make particle dictionary compatible with streaming interface.
+    
+    This allows the automatic streaming fallback to work with pre-loaded particle data
+    by chunking it on-the-fly.
+    """
+    
+    def __init__(self, particles: Dict[str, np.ndarray], chunk_size_gb: float = 2.0):
+        self.particles = particles
+        self.chunk_size_gb = chunk_size_gb
+        
+    def fetch_data_chunked(self):
+        """Generator that yields particle data in chunks."""
+        n_particles = len(self.particles['x'])
+        
+        # Calculate chunk size based on memory target
+        bytes_per_particle = 4 * 8  # 4 fields × 8 bytes
+        target_chunk_bytes = int(self.chunk_size_gb * 1024**3)
+        particles_per_chunk = target_chunk_bytes // bytes_per_particle
+        
+        # Yield chunks
+        for start_idx in range(0, n_particles, particles_per_chunk):
+            end_idx = min(start_idx + particles_per_chunk, n_particles)
+            
+            chunk = {
+                'x': self.particles['x'][start_idx:end_idx],
+                'y': self.particles['y'][start_idx:end_idx], 
+                'z': self.particles['z'][start_idx:end_idx],
+                'mass': self.particles['mass'][start_idx:end_idx]
+            }
+            
+            yield chunk

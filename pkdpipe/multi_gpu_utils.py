@@ -50,23 +50,58 @@ def is_distributed_mode() -> bool:
     # Check SLURM environment for multi-process job first (before any JAX calls)
     import os
     slurm_ntasks = os.environ.get('SLURM_NTASKS')
+    print(f"DEBUG: SLURM_NTASKS = {slurm_ntasks}")
     
     if slurm_ntasks and int(slurm_ntasks) > 1:
+        print(f"DEBUG: SLURM detected with {slurm_ntasks} tasks, trying JAX distributed init")
         try:
             # Initialize JAX distributed mode before any JAX calls
             _distributed_initialize()
+            # Give JAX distributed mode a moment to fully initialize
+            import time
+            time.sleep(0.1)
+            # Import jax for process count check
+            import jax
             # Now we can safely check process count
             process_count = jax.process_count()
+            if JAX_AVAILABLE and hasattr(jax, 'process_index'):
+                process_id = jax.process_index()
+                if process_id == 0:  # Only log from master process
+                    print(f"JAX distributed initialization: {process_count} processes detected")
+                    print(f"is_distributed_mode returning: {process_count > 1}")
             return process_count > 1
         except Exception as e:
             # Initialization failed - fall back to single-process mode
+            print(f"DEBUG: Exception in SLURM JAX init: {e}")
+            print(f"DEBUG: Exception type: {type(e)}")
+            if JAX_AVAILABLE:
+                try:
+                    process_id = jax.process_index() if hasattr(jax, 'process_index') else 0
+                    if process_id == 0:
+                        print(f"JAX distributed initialization failed: {e}")
+                except:
+                    pass
             return False
     
+    print("DEBUG: No SLURM detected or single task, checking if JAX already initialized")
     # Single process environment - check if somehow already initialized
     try:
         import jax.distributed
-        return jax.process_count() > 1
-    except (ImportError, AttributeError):
+        process_count = jax.process_count()
+        if JAX_AVAILABLE and hasattr(jax, 'process_index'):
+            process_id = jax.process_index()
+            if process_id == 0:  # Only log from master process
+                print(f"JAX already initialized: {process_count} processes detected")
+                print(f"is_distributed_mode returning: {process_count > 1}")
+        return process_count > 1
+    except (ImportError, AttributeError) as e:
+        if JAX_AVAILABLE:
+            try:
+                process_id = jax.process_index() if hasattr(jax, 'process_index') else 0
+                if process_id == 0:
+                    print(f"JAX distributed check failed: {e}")
+            except:
+                pass
         return False
 
 
