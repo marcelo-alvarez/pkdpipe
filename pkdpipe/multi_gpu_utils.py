@@ -27,9 +27,19 @@ except ImportError:
     JAX_AVAILABLE = False
 
 
+def _distributed_initialize():
+    """Initialize JAX distributed mode if not already initialized."""
+    import jax
+    if (jax._src.distributed.global_state.client is None): 
+        jax.distributed.initialize()
+
+
 def is_distributed_mode() -> bool:
     """
-    Check if running in JAX distributed mode.
+    Check if running in JAX distributed mode, initializing if needed.
+    
+    This function checks if we're in a multi-process environment (e.g., SLURM)
+    and initializes JAX distributed mode if appropriate.
     
     Returns:
         True if JAX distributed mode is active, False otherwise
@@ -37,6 +47,22 @@ def is_distributed_mode() -> bool:
     if not JAX_AVAILABLE:
         return False
     
+    # Check SLURM environment for multi-process job first (before any JAX calls)
+    import os
+    slurm_ntasks = os.environ.get('SLURM_NTASKS')
+    
+    if slurm_ntasks and int(slurm_ntasks) > 1:
+        try:
+            # Initialize JAX distributed mode before any JAX calls
+            _distributed_initialize()
+            # Now we can safely check process count
+            process_count = jax.process_count()
+            return process_count > 1
+        except Exception as e:
+            # Initialization failed - fall back to single-process mode
+            return False
+    
+    # Single process environment - check if somehow already initialized
     try:
         import jax.distributed
         return jax.process_count() > 1
