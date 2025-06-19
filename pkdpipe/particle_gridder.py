@@ -270,6 +270,108 @@ class ParticleGridder:
                     (valid_coords[:, 0], valid_coords[:, 1], valid_coords[:, 2]), 
                     valid_masses)
 
+    def particles_to_slab(self, particles: Dict[str, np.ndarray], 
+                         y_min: int, y_max: int, ngrid: int) -> np.ndarray:
+        """
+        Grid particles to a spatial slab (for distributed processing).
+        
+        Args:
+            particles: Dictionary with 'x', 'y', 'z', 'mass' arrays
+            y_min: Start index of slab in y-direction (including ghost zones)
+            y_max: End index of slab in y-direction (including ghost zones)
+            ngrid: Full grid resolution
+            
+        Returns:
+            Density grid for the slab with shape (ngrid, slab_height, ngrid)
+        """
+        slab_height = y_max - y_min
+        slab_grid = np.zeros((ngrid, slab_height, ngrid), dtype=np.float64)
+        
+        # Convert particle positions to grid coordinates
+        x_grid = particles['x'] / self.grid_spacing
+        y_grid = particles['y'] / self.grid_spacing
+        z_grid = particles['z'] / self.grid_spacing
+        masses = particles['mass']
+        
+        # Apply periodic boundary conditions
+        x_grid = x_grid % ngrid
+        y_grid = y_grid % ngrid
+        z_grid = z_grid % ngrid
+        
+        # Filter particles that fall within this slab (including ghosts)
+        in_slab = (y_grid >= y_min) & (y_grid < y_max)
+        if not np.any(in_slab):
+            return slab_grid
+        
+        x_slab = x_grid[in_slab]
+        y_slab = y_grid[in_slab] - y_min  # Shift to slab coordinates
+        z_slab = z_grid[in_slab]
+        mass_slab = masses[in_slab]
+        
+        # Perform mass assignment on slab
+        if self.assignment == 'cic':
+            self._cic_assign_slab(slab_grid, x_slab, y_slab, z_slab, mass_slab)
+        elif self.assignment == 'ngp':
+            self._ngp_assign_slab(slab_grid, x_slab, y_slab, z_slab, mass_slab)
+        else:
+            raise ValueError(f"Unknown assignment scheme: {self.assignment}")
+        
+        return slab_grid
+    
+    def _cic_assign_slab(self, grid: np.ndarray, x: np.ndarray, y: np.ndarray, 
+                        z: np.ndarray, mass: np.ndarray) -> None:
+        """CIC assignment for slab geometry."""
+        ngrid_x, slab_height, ngrid_z = grid.shape
+        
+        for i in range(len(x)):
+            # Grid cell indices (lower left corner)
+            ix = int(np.floor(x[i])) % ngrid_x
+            iy = int(np.floor(y[i]))
+            iz = int(np.floor(z[i])) % ngrid_z
+            
+            # Check bounds for y (slab dimension)
+            if iy < 0 or iy >= slab_height - 1:
+                continue
+            
+            # Fractional distances
+            dx = x[i] - np.floor(x[i])
+            dy = y[i] - np.floor(y[i])
+            dz = z[i] - np.floor(z[i])
+            
+            # CIC weights
+            w000 = (1 - dx) * (1 - dy) * (1 - dz)
+            w001 = (1 - dx) * (1 - dy) * dz
+            w010 = (1 - dx) * dy * (1 - dz)
+            w011 = (1 - dx) * dy * dz
+            w100 = dx * (1 - dy) * (1 - dz)
+            w101 = dx * (1 - dy) * dz
+            w110 = dx * dy * (1 - dz)
+            w111 = dx * dy * dz
+            
+            # Assign mass to 8 surrounding grid points
+            grid[ix, iy, iz] += mass[i] * w000
+            grid[ix, iy, (iz + 1) % ngrid_z] += mass[i] * w001
+            grid[ix, iy + 1, iz] += mass[i] * w010
+            grid[ix, iy + 1, (iz + 1) % ngrid_z] += mass[i] * w011
+            grid[(ix + 1) % ngrid_x, iy, iz] += mass[i] * w100
+            grid[(ix + 1) % ngrid_x, iy, (iz + 1) % ngrid_z] += mass[i] * w101
+            grid[(ix + 1) % ngrid_x, iy + 1, iz] += mass[i] * w110
+            grid[(ix + 1) % ngrid_x, iy + 1, (iz + 1) % ngrid_z] += mass[i] * w111
+    
+    def _ngp_assign_slab(self, grid: np.ndarray, x: np.ndarray, y: np.ndarray, 
+                        z: np.ndarray, mass: np.ndarray) -> None:
+        """NGP assignment for slab geometry."""
+        ngrid_x, slab_height, ngrid_z = grid.shape
+        
+        for i in range(len(x)):
+            ix = int(np.round(x[i])) % ngrid_x
+            iy = int(np.round(y[i]))
+            iz = int(np.round(z[i])) % ngrid_z
+            
+            # Check bounds for y (slab dimension)
+            if 0 <= iy < slab_height:
+                grid[ix, iy, iz] += mass[i]
+
     def get_density_diagnostics(self) -> Dict[str, float]:
         """
         Get diagnostic information about the last density field calculation.
