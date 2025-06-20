@@ -30,7 +30,12 @@ except ImportError:
 def _distributed_initialize():
     """Initialize JAX distributed mode if not already initialized."""
     import jax
-    if (jax._src.distributed.global_state.client is None): 
+    try:
+        # Check if already initialized by trying to get process count
+        jax.process_count()
+        # If we get here, it's already initialized
+    except RuntimeError:
+        # Not initialized yet, initialize now
         jax.distributed.initialize()
 
 
