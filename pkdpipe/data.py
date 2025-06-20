@@ -350,6 +350,37 @@ class DataProcessor:
         
         return data
 
+    @staticmethod
+    def cull_tile_reshape_single(cdata, vars, bbox, r1, r2, format_info, lightcone):
+        """Cull, tile, and reshape data for a single chunk (memory efficient version)."""
+        shifts = []
+        bounds = bbox.copy()
+        
+        if not format_info.get('sliced', True) and lightcone:
+            # Create 8 corner shifts for lightcone mode
+            offsets = np.array([[-0.5, 0.5], [-0.5, 0.5], [-0.5, 0.5]])
+            d = np.stack(np.meshgrid(*offsets, indexing='ij'), axis=-1).reshape(-1, 3)
+            for offset in d:
+                shifts.append(np.rec.fromarrays(offset, names=['x', 'y', 'z']))
+            bounds.append([r1, r2])
+        else:
+            # Single shift based on format offset
+            offset = -np.asarray(format_info.get('offset', [0, 0, 0]))
+            shifts.append(np.rec.fromarrays(offset, names=['x', 'y', 'z']))
+        
+        # Collect data from all shifts
+        chunk_data_list = []
+        for shift in shifts:
+            sdata = DataProcessor.cull_shift_reshape(vars, cdata, shift, bounds)
+            if sdata.size > 0:
+                chunk_data_list.append(sdata)
+        
+        # Concatenate all shifts for this chunk
+        if chunk_data_list:
+            return np.concatenate(chunk_data_list, axis=1)
+        else:
+            return np.array([], dtype=np.float32).reshape(len(vars), 0)
+
 
 class FileReader:
     """Handles file I/O operations."""
@@ -473,7 +504,7 @@ class Data:
         # Validate step index
         if step >= len(zvals) or step < 1:
             logger.warning(f"Invalid step {step}, must be between 1 and {len(zvals)-1}")
-            return np.array([]).reshape(len(dprops['vars']), 0)
+            return np.array([], dtype=np.float32).reshape(len(dprops['vars']), 0)
         
         z1, z2 = zvals[step], zvals[step - 1]
         vars = dprops['vars']
@@ -483,8 +514,8 @@ class Data:
         chi1, chi2 = self.chiofz(z1), self.chiofz(z2)
         r1, r2 = chi1 / self.params.boxsize, chi2 / self.params.boxsize
         
-        # Initialize empty data array
-        data = np.array([]).reshape(len(vars), 0)
+        # Initialize empty data array with correct dtype (float32 to match file format)
+        data = np.array([], dtype=np.float32).reshape(len(vars), 0)
         
         # Check redshift bounds
         if lightcone and z1 > self.params.zmax:
@@ -545,6 +576,12 @@ class Data:
         
         offset = hoffset
         
+        # Use list to collect chunks, then concatenate once at the end (memory efficient)
+        data_chunks = []
+        
+        # TEMP DEBUG: Limit to 1 chunk for fast testing
+        chunks_processed = 0
+        
         while True:
             # Debug: Log first few chunks to verify assignment (verbose mode only)
             if self.verbose and slurm_info['is_slurm'] and chunk < 3:
@@ -563,10 +600,20 @@ class Data:
             # Read chunk data
             cdata = FileReader.read_chunk(filepath, dtype, offset, count)
             
+            # TEMPORARY: Only read first 3 chunks per process for manageable testing
+            assigned_chunks = sum(1 for i in range(chunk) if i % ntasks_divisor == task_id)
+            if assigned_chunks >= 3:
+                _log_info(f"DEBUG: SLURM process {task_id}: Stopping after 3 chunks for testing")
+                break
+            
             if cdata.size == 0:
                 if format_info.get('name') != "tipsy":
                     break
-                return data
+                # For tipsy format, concatenate all chunks and return
+                if data_chunks:
+                    return np.concatenate(data_chunks, axis=1)
+                else:
+                    return np.array([], dtype=np.float32).reshape(len(vars), 0)
             
             # Progress reporting for tipsy format
             if format_info.get('name') == "tipsy":
@@ -586,13 +633,22 @@ class Data:
                 
                 offset += chunksize
             
-            # Process and add data
-            data = DataProcessor.cull_tile_reshape(data, cdata, vars, bbox, r1, r2, 
-                                                 format_info, lightcone)
+            # Process chunk and add to list (memory efficient)
+            chunk_data = DataProcessor.cull_tile_reshape_single(cdata, vars, bbox, r1, r2, 
+                                                              format_info, lightcone)
+            if chunk_data.size > 0:
+                data_chunks.append(chunk_data)
+            
+            # TEMP DEBUG: Stop after 1 chunk for fast testing
+            chunks_processed += 1
+            if chunks_processed >= 1:
+                break
         
-        # No special completion handling needed for simple newline output
-        
-        return data
+        # Concatenate all chunks once at the end (memory efficient)
+        if data_chunks:
+            return np.concatenate(data_chunks, axis=1)
+        else:
+            return np.array([], dtype=np.float32).reshape(len(vars), 0)
 
     def _read_step_multiple_files(self, step, bbox, 
                                  dprops, format_info, 
@@ -608,7 +664,7 @@ class Data:
             bbox: Bounding box for culling
             dprops: Dataset properties
             format_info: File format information
-            lightcone: Whether in lightcone mode
+            lightcone: Whether to use lightcone mode
             redshift: Target redshift
             task_id: Process ID (for logging)
             assigned_files: List of file chunk numbers assigned to this process
