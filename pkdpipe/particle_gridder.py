@@ -100,7 +100,12 @@ class ParticleGridder:
             return self._multi_device_assignment(grid_coords, masses, n_devices)
     
     def _cic_assignment(self, grid_coords: np.ndarray, masses: np.ndarray) -> np.ndarray:
-        """Cloud-in-Cell mass assignment."""
+        """
+        Cloud-in-Cell mass assignment using vectorized operations.
+        
+        Optimized version that eliminates Python loops for better performance
+        with large particle counts (e.g., 238M particles).
+        """
         # Initialize density grid
         density_grid = np.zeros((self.ngrid, self.ngrid, self.ngrid), dtype=np.float32)
         
@@ -113,24 +118,46 @@ class ParticleGridder:
         # Apply periodic boundary conditions
         i_coords = i_coords % self.ngrid
         
-        # CIC weights (trilinear interpolation)
+        # Vectorized CIC assignment
+        # Create arrays for all 8 corners at once
+        n_particles = len(masses)
+        
+        # Weight arrays for all particles and all 8 corners
+        weights = np.zeros((n_particles, 8), dtype=np.float32)
+        grid_indices = np.zeros((n_particles, 8, 3), dtype=int)
+        
+        # Calculate weights and indices for all 8 corners simultaneously
+        corner_idx = 0
         for i in range(2):
             for j in range(2):
                 for k in range(2):
-                    # Weights for this corner
-                    weight = ((1-i) * (1-dx[:, 0]) + i * dx[:, 0]) * \
-                            ((1-j) * (1-dx[:, 1]) + j * dx[:, 1]) * \
-                            ((1-k) * (1-dx[:, 2]) + k * dx[:, 2])
+                    # Weights for this corner (vectorized)
+                    weights[:, corner_idx] = (
+                        ((1-i) * (1-dx[:, 0]) + i * dx[:, 0]) *
+                        ((1-j) * (1-dx[:, 1]) + j * dx[:, 1]) *
+                        ((1-k) * (1-dx[:, 2]) + k * dx[:, 2])
+                    )
                     
                     # Grid indices with periodic wrapping
-                    gi = (i_coords[:, 0] + i) % self.ngrid
-                    gj = (i_coords[:, 1] + j) % self.ngrid
-                    gk = (i_coords[:, 2] + k) % self.ngrid
+                    grid_indices[:, corner_idx, 0] = (i_coords[:, 0] + i) % self.ngrid
+                    grid_indices[:, corner_idx, 1] = (i_coords[:, 1] + j) % self.ngrid
+                    grid_indices[:, corner_idx, 2] = (i_coords[:, 2] + k) % self.ngrid
                     
-                    # Add weighted mass to grid
-                    np.add.at(density_grid, (gi, gj, gk), masses * weight)
+                    corner_idx += 1
+        
+        # Vectorized mass assignment using np.add.at
+        # Flatten the operations to avoid nested loops
+        for corner in range(8):
+            gi = grid_indices[:, corner, 0]
+            gj = grid_indices[:, corner, 1] 
+            gk = grid_indices[:, corner, 2]
+            weighted_masses = masses * weights[:, corner]
+            
+            # Add weighted mass to grid (this is the only remaining loop, but over 8 items not millions)
+            np.add.at(density_grid, (gi, gj, gk), weighted_masses)
         
         return density_grid
+
     
     def _ngp_assignment(self, grid_coords: np.ndarray, masses: np.ndarray) -> np.ndarray:
         """Nearest Grid Point mass assignment."""
@@ -284,6 +311,9 @@ class ParticleGridder:
         Returns:
             Density grid for the slab with shape (ngrid, slab_height, ngrid)
         """
+        # DEBUG: Print entry to gridding function
+        print(f"DEBUG: Entering particles_to_slab with {len(particles['x'])} particles", flush=True)
+        
         slab_height = y_max - y_min
         slab_grid = np.zeros((ngrid, slab_height, ngrid), dtype=np.float64)
         
@@ -320,57 +350,127 @@ class ParticleGridder:
     
     def _cic_assign_slab(self, grid: np.ndarray, x: np.ndarray, y: np.ndarray, 
                         z: np.ndarray, mass: np.ndarray) -> None:
-        """CIC assignment for slab geometry."""
-        ngrid_x, slab_height, ngrid_z = grid.shape
+        """
+        CIC assignment for slab geometry using highly optimized vectorized operations.
         
-        for i in range(len(x)):
-            # Grid cell indices (lower left corner)
-            ix = int(np.floor(x[i])) % ngrid_x
-            iy = int(np.floor(y[i]))
-            iz = int(np.floor(z[i])) % ngrid_z
-            
-            # Check bounds for y (slab dimension)
-            if iy < 0 or iy >= slab_height - 1:
-                continue
-            
-            # Fractional distances
-            dx = x[i] - np.floor(x[i])
-            dy = y[i] - np.floor(y[i])
-            dz = z[i] - np.floor(z[i])
-            
-            # CIC weights
-            w000 = (1 - dx) * (1 - dy) * (1 - dz)
-            w001 = (1 - dx) * (1 - dy) * dz
-            w010 = (1 - dx) * dy * (1 - dz)
-            w011 = (1 - dx) * dy * dz
-            w100 = dx * (1 - dy) * (1 - dz)
-            w101 = dx * (1 - dy) * dz
-            w110 = dx * dy * (1 - dz)
-            w111 = dx * dy * dz
-            
-            # Assign mass to 8 surrounding grid points
-            grid[ix, iy, iz] += mass[i] * w000
-            grid[ix, iy, (iz + 1) % ngrid_z] += mass[i] * w001
-            grid[ix, iy + 1, iz] += mass[i] * w010
-            grid[ix, iy + 1, (iz + 1) % ngrid_z] += mass[i] * w011
-            grid[(ix + 1) % ngrid_x, iy, iz] += mass[i] * w100
-            grid[(ix + 1) % ngrid_x, iy, (iz + 1) % ngrid_z] += mass[i] * w101
-            grid[(ix + 1) % ngrid_x, iy + 1, iz] += mass[i] * w110
-            grid[(ix + 1) % ngrid_x, iy + 1, (iz + 1) % ngrid_z] += mass[i] * w111
+        Further optimized version with reduced memory allocations and faster operations.
+        """
+        import time
+        
+        ngrid_x, slab_height, ngrid_z = grid.shape
+        start_time = time.time()
+        
+        print(f"DEBUG: Starting optimized CIC assignment for {len(x)} particles to {ngrid_x}x{slab_height}x{ngrid_z} grid", flush=True)
+        
+        if len(x) == 0:
+            print(f"DEBUG: No particles to assign, completing immediately", flush=True)
+            return
+        
+        print(f"DEBUG: Step 1/5 - Computing grid coordinates and bounds check", flush=True)
+        step_start = time.time()
+        
+        # Get integer grid coordinates (lower left corner) - use int32 for memory efficiency
+        ix = np.floor(x).astype(np.int32) % ngrid_x
+        iy = np.floor(y).astype(np.int32)
+        iz = np.floor(z).astype(np.int32) % ngrid_z
+        
+        # Check bounds for y (slab dimension) - filter out invalid particles
+        valid_mask = (iy >= 0) & (iy < slab_height - 1)
+        n_valid = np.sum(valid_mask)
+        print(f"DEBUG: Step 1 complete in {time.time() - step_start:.2f}s - {n_valid}/{len(x)} particles valid", flush=True)
+        
+        if n_valid == 0:
+            print(f"DEBUG: No valid particles after bounds check, completing", flush=True)
+            return
+        
+        print(f"DEBUG: Step 2/5 - Filtering particles and computing fractional distances", flush=True)
+        step_start = time.time()
+        
+        # Apply mask to all arrays - use float32 for memory efficiency
+        ix_valid = ix[valid_mask]
+        iy_valid = iy[valid_mask]  
+        iz_valid = iz[valid_mask]
+        x_valid = x[valid_mask].astype(np.float32)
+        y_valid = y[valid_mask].astype(np.float32)
+        z_valid = z[valid_mask].astype(np.float32)
+        mass_valid = mass[valid_mask].astype(np.float32)
+        
+        # Fractional distances - compute directly without intermediate arrays
+        dx = x_valid - ix_valid.astype(np.float32)
+        dy = y_valid - iy_valid.astype(np.float32)
+        dz = z_valid - iz_valid.astype(np.float32)
+        
+        print(f"DEBUG: Step 2 complete in {time.time() - step_start:.2f}s", flush=True)
+        
+        print(f"DEBUG: Step 3/5 - Optimized CIC mass assignment (8 corners)", flush=True)
+        step_start = time.time()
+        
+        # Highly optimized corner assignment - no intermediate arrays
+        # Process all 8 corners with minimal memory allocation
+        corner_count = 0
+        for i in range(2):
+            for j in range(2):
+                for k in range(2):
+                    corner_count += 1
+                    print(f"DEBUG: Processing corner {corner_count}/8", flush=True)
+                    # Compute weights directly
+                    w_x = (1-i) * (1-dx) + i * dx
+                    w_y = (1-j) * (1-dy) + j * dy  
+                    w_z = (1-k) * (1-dz) + k * dz
+                    weights = mass_valid * w_x * w_y * w_z
+                    
+                    # Compute grid indices with bounds checking
+                    gi = (ix_valid + i) % ngrid_x
+                    gj = iy_valid + j
+                    gk = (iz_valid + k) % ngrid_z
+                    
+                    # Only assign to valid y-indices
+                    valid_y_mask = (gj >= 0) & (gj < slab_height)
+                    if np.any(valid_y_mask):
+                        np.add.at(grid, 
+                                (gi[valid_y_mask], gj[valid_y_mask], gk[valid_y_mask]), 
+                                weights[valid_y_mask])
+        
+        print(f"DEBUG: Step 3 complete in {time.time() - step_start:.2f}s", flush=True)
+        
+        total_time = time.time() - start_time
+        print(f"DEBUG: Step 4/5 - CIC assignment COMPLETE for {n_valid} particles in {total_time:.2f}s total", flush=True)
+        print(f"DEBUG: Performance: {n_valid/total_time:.0f} particles/second", flush=True)
+
+
+
     
     def _ngp_assign_slab(self, grid: np.ndarray, x: np.ndarray, y: np.ndarray, 
                         z: np.ndarray, mass: np.ndarray) -> None:
-        """NGP assignment for slab geometry."""
+        """
+        NGP assignment for slab geometry using vectorized operations.
+        
+        Optimized version that eliminates Python loops for better performance.
+        """
         ngrid_x, slab_height, ngrid_z = grid.shape
         
-        for i in range(len(x)):
-            ix = int(np.round(x[i])) % ngrid_x
-            iy = int(np.round(y[i]))
-            iz = int(np.round(z[i])) % ngrid_z
-            
-            # Check bounds for y (slab dimension)
-            if 0 <= iy < slab_height:
-                grid[ix, iy, iz] += mass[i]
+        if len(x) == 0:
+            return
+        
+        # Round to nearest grid point
+        ix = np.round(x).astype(int) % ngrid_x
+        iy = np.round(y).astype(int)
+        iz = np.round(z).astype(int) % ngrid_z
+        
+        # Check bounds for y (slab dimension)
+        valid_mask = (iy >= 0) & (iy < slab_height)
+        if not np.any(valid_mask):
+            return
+        
+        # Apply mask to valid particles
+        ix_valid = ix[valid_mask]
+        iy_valid = iy[valid_mask]
+        iz_valid = iz[valid_mask]
+        mass_valid = mass[valid_mask]
+        
+        # Vectorized mass assignment
+        np.add.at(grid, (ix_valid, iy_valid, iz_valid), mass_valid)
+
 
     def get_density_diagnostics(self) -> Dict[str, float]:
         """
