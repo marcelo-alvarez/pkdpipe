@@ -15,11 +15,18 @@ try:
     import os
     # Let JAX auto-detect the best platform (GPU if available, CPU otherwise)
     # os.environ.setdefault('JAX_PLATFORMS', 'cpu')  # Commented out to allow GPU detection
+    
+    # Configure JAX memory management before importing jax
+    os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
+    os.environ.setdefault('XLA_PYTHON_CLIENT_MEM_FRACTION', '0.7')
+    
     import jax
     import jax.numpy as jnp
     
-    # Enable 64-bit precision in JAX
-    jax.config.update("jax_enable_x64", True)
+    # Use 32-bit precision to match our float32 grids and save memory
+    jax.config.update("jax_enable_x64", False)
+    # Additional memory optimization settings
+    jax.config.update("jax_platform_name", "gpu")
     
     JAX_AVAILABLE = True
     
@@ -223,7 +230,7 @@ class TestPowerSpectrumCalculator:
         print(f"\nExpected Shot Noise:")
         print(f"  P_shot = V/N = {box_size:.1f}³/{len(particles['x']):,} = {expected_shot_noise:.6e} (Mpc/h)³")
         
-        # Calculate power spectrum
+        # Calculate power spectrum (now with fixed dtype consistency)
         k_bins, power_spectrum, n_modes = calc.calculate_power_spectrum(particles)
         
         # Get diagnostic information about the density field

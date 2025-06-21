@@ -38,10 +38,24 @@ warnings.filterwarnings("ignore", message=".*Failed to open libtpu.so.*")
 logging.getLogger('jax._src.xla_bridge').setLevel(logging.ERROR)
 
 try:
+    import os
+    # Configure NumPy threading to use all CPU cores for gridding operations
+    # This is critical for scaling particle gridding across all 32 cores per GPU
+    os.environ.setdefault('OMP_NUM_THREADS', '32')
+    os.environ.setdefault('OPENBLAS_NUM_THREADS', '32') 
+    os.environ.setdefault('MKL_NUM_THREADS', '32')
+    os.environ.setdefault('NUMEXPR_MAX_THREADS', '32')
+    
+    # Configure JAX memory management before importing jax
+    os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
+    os.environ.setdefault('XLA_PYTHON_CLIENT_MEM_FRACTION', '0.7')
+    
     import jax
     import jax.numpy as jnp
-    # Enable 64-bit precision in JAX
-    jax.config.update("jax_enable_x64", True)
+    # Use 32-bit precision to match our float32 grids and save memory
+    jax.config.update("jax_enable_x64", False)
+    # Additional memory optimization settings
+    jax.config.update("jax_platform_name", "gpu")
     JAX_AVAILABLE = True
 except ImportError:
     jax = None
@@ -644,10 +658,14 @@ class PowerSpectrumCalculator:
         """
         dx = self.box_size / self.ngrid
         
-        # Create k-component grids
-        kx = 2 * np.pi * np.fft.fftfreq(self.ngrid, dx)
-        ky = 2 * np.pi * np.fft.fftfreq(self.ngrid, dx)
-        kz = 2 * np.pi * np.fft.rfftfreq(self.ngrid, dx)  # Real FFT
+        # Determine grid dimensions from input k_grid shape
+        # This handles both full grid and slab decomposition cases
+        nx, ny, nz_rfft = k_grid.shape
+        
+        # Create k-component grids with correct dimensions
+        kx = 2 * np.pi * np.fft.fftfreq(nx, dx)
+        ky = 2 * np.pi * np.fft.fftfreq(ny, dx)  # Use actual slab height, not self.ngrid
+        kz = 2 * np.pi * np.fft.rfftfreq(self.ngrid, dx)  # Real FFT dimension always uses full grid
         
         kx_3d, ky_3d, kz_3d = np.meshgrid(kx, ky, kz, indexing='ij')
         
@@ -671,10 +689,14 @@ class PowerSpectrumCalculator:
         """
         dx = self.box_size / self.ngrid
         
-        # Create k-component grids
-        kx = 2 * np.pi * np.fft.fftfreq(self.ngrid, dx)
-        ky = 2 * np.pi * np.fft.fftfreq(self.ngrid, dx)
-        kz = 2 * np.pi * np.fft.rfftfreq(self.ngrid, dx)  # Real FFT
+        # Determine grid dimensions from input k_grid shape
+        # This handles both full grid and slab decomposition cases
+        nx, ny, nz_rfft = k_grid.shape
+        
+        # Create k-component grids with correct dimensions
+        kx = 2 * np.pi * np.fft.fftfreq(nx, dx)
+        ky = 2 * np.pi * np.fft.fftfreq(ny, dx)  # Use actual slab height, not self.ngrid
+        kz = 2 * np.pi * np.fft.rfftfreq(self.ngrid, dx)  # Real FFT dimension always uses full grid
         
         kx_3d, ky_3d, kz_3d = np.meshgrid(kx, ky, kz, indexing='ij')
         

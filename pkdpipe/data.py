@@ -600,10 +600,10 @@ class Data:
             # Read chunk data
             cdata = FileReader.read_chunk(filepath, dtype, offset, count)
             
-            # TEMPORARY: Only read first 3 chunks per process for manageable testing
+            # TEMPORARY: Only read first 4 chunks per process for incremental testing
             assigned_chunks = sum(1 for i in range(chunk) if i % ntasks_divisor == task_id)
-            if assigned_chunks >= 3:
-                _log_info(f"DEBUG: SLURM process {task_id}: Stopping after 3 chunks for testing")
+            if assigned_chunks >= 4:
+                _log_info(f"DEBUG: SLURM process {task_id}: Stopping after 4 chunks for testing")
                 break
             
             if cdata.size == 0:
@@ -639,9 +639,9 @@ class Data:
             if chunk_data.size > 0:
                 data_chunks.append(chunk_data)
             
-            # TEMP DEBUG: Stop after 1 chunk for fast testing
+            # TEMP DEBUG: Stop after 4 chunks for incremental testing
             chunks_processed += 1
-            if chunks_processed >= 1:
+            if chunks_processed >= 4:
                 break
         
         # Concatenate all chunks once at the end (memory efficient)
