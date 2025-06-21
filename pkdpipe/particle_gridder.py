@@ -65,9 +65,9 @@ class ParticleGridder:
         # Handle empty particles case
         if len(particles['x']) == 0:
             if n_devices == 1:
-                return np.zeros((self.ngrid, self.ngrid, self.ngrid), dtype=np.float64)
+                return np.zeros((self.ngrid, self.ngrid, self.ngrid), dtype=np.float32)
             else:
-                return [np.zeros((self.ngrid, self.ngrid//n_devices, self.ngrid), dtype=np.float64) 
+                return [np.zeros((self.ngrid, self.ngrid//n_devices, self.ngrid), dtype=np.float32) 
                         for _ in range(n_devices)]
         
         # Check that all arrays have same length
@@ -315,18 +315,18 @@ class ParticleGridder:
         print(f"DEBUG: Entering particles_to_slab with {len(particles['x'])} particles", flush=True)
         
         slab_height = y_max - y_min
-        slab_grid = np.zeros((ngrid, slab_height, ngrid), dtype=np.float64)
+        slab_grid = np.zeros((ngrid, slab_height, ngrid), dtype=np.float32)
         
-        # Convert particle positions to grid coordinates
-        x_grid = particles['x'] / self.grid_spacing
-        y_grid = particles['y'] / self.grid_spacing
-        z_grid = particles['z'] / self.grid_spacing
-        masses = particles['mass']
+        # Convert particle positions to grid coordinates (ensure NumPy arrays)
+        x_grid = np.asarray(particles['x']) / self.grid_spacing
+        y_grid = np.asarray(particles['y']) / self.grid_spacing
+        z_grid = np.asarray(particles['z']) / self.grid_spacing
+        masses = np.asarray(particles['mass'])
         
-        # Apply periodic boundary conditions
-        x_grid = x_grid % ngrid
-        y_grid = y_grid % ngrid
-        z_grid = z_grid % ngrid
+        # Apply periodic boundary conditions (use NumPy operations)
+        x_grid = np.mod(x_grid, ngrid)
+        y_grid = np.mod(y_grid, ngrid)
+        z_grid = np.mod(z_grid, ngrid)
         
         # Filter particles that fall within this slab (including ghosts)
         in_slab = (y_grid >= y_min) & (y_grid < y_max)
