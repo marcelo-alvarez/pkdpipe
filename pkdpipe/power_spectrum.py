@@ -281,8 +281,7 @@ class PowerSpectrumCalculator:
         if JAX_AVAILABLE:
             # In distributed mode, just use local mass times process count as approximation
             # This avoids JAX collective operation issues for now
-            local_mass_jax = jnp.array(local_mass)
-            total_mass = local_mass_jax * jax.process_count()
+            total_mass = local_mass * jax.process_count()
         else:
             total_mass = local_mass
             
@@ -723,21 +722,40 @@ class PowerSpectrumCalculator:
         return k_binned, power_binned, n_modes
     
     def get_density_diagnostics(self) -> Dict[str, float]:
-        """
-        Get diagnostic information about the last density field calculation.
-        
-        Returns:
-            Dictionary with density field statistics including:
-            - mean_density: Mean density of the field
-            - density_variance: Variance of density field
-            - delta_mean: Mean of density contrast field (should be ~0)
-            - delta_variance: Variance of density contrast field
-            - theoretical_shot_noise_variance: Expected shot noise variance
-        """
-        if hasattr(self, '_last_density_stats'):
-            return self._last_density_stats.copy()
-        else:
-            return {}
+            """
+            Get diagnostic information about the last density field calculation.
+            
+            For distributed mode, returns global statistics that work across all processes.
+            For single-process mode, returns detailed local statistics.
+            
+            Returns:
+                Dictionary with density field statistics including:
+                - mean_density: Mean density of the field
+                - density_variance: Variance of density field (if available)
+                - delta_mean: Mean of density contrast field (if available)
+                - delta_variance: Variance of density contrast field (if available)
+                - theoretical_shot_noise_variance: Expected shot noise variance (if available)
+            """
+            # In distributed mode, provide global mean density that all processes can access
+            if is_distributed_mode() and hasattr(self, '_global_total_particles'):
+                # Calculate global mean density from total particles and box volume
+                volume = self.box_size ** 3
+                mean_density = float(self._global_total_particles / volume)
+                
+                return {
+                    'mean_density': mean_density,
+                    'density_variance': float('nan'),  # Not available in distributed mode
+                    'delta_mean': float('nan'),        # Not available in distributed mode  
+                    'delta_variance': float('nan'),    # Not available in distributed mode
+                    'theoretical_shot_noise_variance': float('nan')  # Not available in distributed mode
+                }
+            
+            # Single-process mode or fallback: use detailed local statistics if available
+            if hasattr(self, '_last_density_stats'):
+                return self._last_density_stats.copy()
+            else:
+                return {}
+
     
     def _should_use_streaming(self, particles: Dict[str, np.ndarray]) -> bool:
         """
@@ -956,9 +974,9 @@ def redistribute_particles_mpi(particles, assignment_scheme, ngrid, box_size):
     final_particles = {}
     for key in ['x', 'y', 'z', 'mass']:
         if redistributed_particles[key]:
-            final_particles[key] = jnp.concatenate(redistributed_particles[key])
+            final_particles[key] = np.concatenate(redistributed_particles[key])
         else:
-            final_particles[key] = jnp.array([], dtype=particle_dtypes[key])
+            final_particles[key] = np.array([], dtype=particle_dtypes[key])
     
     redistributed_particles = final_particles
     
@@ -1094,10 +1112,10 @@ def redistribute_particles_sequential_read(data_reader, assignment_scheme, ngrid
     else:
         print(f"DEBUG: Process {process_id}: Timeout waiting for particles", flush=True)
         redistributed_particles = {
-            'x': jnp.array([], dtype=jnp.float32),
-            'y': jnp.array([], dtype=jnp.float32), 
-            'z': jnp.array([], dtype=jnp.float32),
-            'mass': jnp.array([], dtype=jnp.float32)
+            'x': np.array([], dtype=np.float32),
+            'y': np.array([], dtype=np.float32), 
+            'z': np.array([], dtype=np.float32),
+            'mass': np.array([], dtype=np.float32)
         }
     
     return redistributed_particles, my_y_min, my_y_max, base_y_min, base_y_max
@@ -1270,13 +1288,13 @@ def redistribute_particles_spatial(particles, assignment_scheme, ngrid, box_size
                 for key in ['x', 'y', 'z', 'mass']:
                     key_arrays = [p[key] for p in received_particles_list if len(p[key]) > 0]
                     if key_arrays:
-                        redistributed_particles[key] = jnp.concatenate(key_arrays)
+                        redistributed_particles[key] = np.concatenate(key_arrays)
                     else:
-                        redistributed_particles[key] = jnp.array([], dtype=jnp.float32)
+                        redistributed_particles[key] = np.array([], dtype=np.float32)
             else:
                 redistributed_particles = {}
                 for key in ['x', 'y', 'z', 'mass']:
-                    redistributed_particles[key] = jnp.array([], dtype=jnp.float32)
+                    redistributed_particles[key] = np.array([], dtype=np.float32)
             
             domain_particles = len(redistributed_particles['x'])
             print(f"DEBUG: Process {process_id}: Combined {domain_particles} particles from file exchange", flush=True)
