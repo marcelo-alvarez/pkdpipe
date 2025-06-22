@@ -420,8 +420,44 @@ class PowerSpectrumCalculator:
                                gridder: ParticleGridder, subtract_shot_noise: bool,
                                assignment: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Calculate power spectrum on single GPU/CPU."""
+        # Time the particle gridding step specifically
+        import time
+        
+        # MPI barrier before gridding timing
+        try:
+            from mpi4py import MPI
+            comm = MPI.COMM_WORLD
+            process_id = comm.Get_rank()
+            comm.Barrier()
+            if process_id == 0:
+                print(f"🔄 Starting particle assignment to grid...")
+        except:
+            process_id = 0
+            print(f"🔄 Starting particle assignment to grid...")
+        
+        gridding_start = time.time()
+        
         # Single device gridding (may use multiprocessing)
         density_grid = gridder.particles_to_grid(particles, 1)
+        
+        gridding_end = time.time()
+        gridding_time = gridding_end - gridding_start
+        
+        # MPI barrier after gridding
+        try:
+            comm.Barrier()
+            if process_id == 0:
+                n_particles = len(particles['x'])
+                throughput = n_particles / gridding_time / 1e6
+                print(f"✅ Particle assignment completed in {gridding_time:.2f} seconds")
+                print(f"📊 Gridding throughput: {throughput:.1f} M particles/sec")
+                print(f"📏 Grid shape: {density_grid.shape}")
+                print(f"📊 Grid memory: {density_grid.nbytes / 1024**3:.2f} GB")
+        except:
+            n_particles = len(particles['x'])
+            throughput = n_particles / gridding_time / 1e6
+            print(f"✅ Particle assignment completed in {gridding_time:.2f} seconds")
+            print(f"📊 Gridding throughput: {throughput:.1f} M particles/sec")
         
         # === SAFE POINT: Initialize JAX after multiprocessing is complete ===
         jax, jnp = _ensure_jax_initialized()
