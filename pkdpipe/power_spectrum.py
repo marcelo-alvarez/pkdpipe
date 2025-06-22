@@ -915,6 +915,34 @@ def redistribute_particles_mpi(particles, assignment_scheme, ngrid, box_size):
     
     print(f"DEBUG: MPI rank {rank}: my spatial domain y=[{my_y_min:.1f}, {my_y_max:.1f}]", flush=True)
     
+    # DEBUG: Check particle coordinate ranges vs spatial domains
+    y_particle_min = float(np.min(particles['y']))
+    y_particle_max = float(np.max(particles['y']))
+    x_particle_min = float(np.min(particles['x']))
+    x_particle_max = float(np.max(particles['x']))
+    z_particle_min = float(np.min(particles['z']))
+    z_particle_max = float(np.max(particles['z']))
+    
+    print(f"DEBUG: MPI rank {rank}: PARTICLE RANGES:", flush=True)
+    print(f"  x: [{x_particle_min:.6f}, {x_particle_max:.6f}]", flush=True)
+    print(f"  y: [{y_particle_min:.6f}, {y_particle_max:.6f}]", flush=True)
+    print(f"  z: [{z_particle_min:.6f}, {z_particle_max:.6f}]", flush=True)
+    print(f"DEBUG: MPI rank {rank}: box_size = {box_size:.1f}, ngrid = {ngrid}", flush=True)
+    
+    # CRITICAL FIX: Scale particle coordinates from [0,1] to [0,box_size]
+    # PKDGrav3 TPS files store coordinates as fractions of box size
+    print(f"DEBUG: MPI rank {rank}: Scaling particle coordinates from [0,1] to [0,{box_size:.1f}]", flush=True)
+    particles['x'] = particles['x'] * box_size
+    particles['y'] = particles['y'] * box_size  
+    particles['z'] = particles['z'] * box_size
+    
+    # Verify scaling worked
+    y_scaled_min = float(np.min(particles['y']))
+    y_scaled_max = float(np.max(particles['y']))
+    print(f"DEBUG: MPI rank {rank}: SCALED y range: [{y_scaled_min:.1f}, {y_scaled_max:.1f}] (should be [0, {box_size:.1f}])", flush=True)
+    print(f"DEBUG: MPI rank {rank}: SPATIAL DOMAIN in grid units: y=[{my_y_min:.1f}, {my_y_max:.1f}]", flush=True)
+    print(f"DEBUG: MPI rank {rank}: SPATIAL DOMAIN in coordinate units: y=[{my_y_min*box_size/ngrid:.1f}, {my_y_max*box_size/ngrid:.1f}]", flush=True)
+    
     # Calculate all spatial domains
     all_domains = []
     for proc in range(size):
@@ -928,6 +956,17 @@ def redistribute_particles_mpi(particles, assignment_scheme, ngrid, box_size):
     # Step 1: Determine destination process for each local particle
     y_grid = particles['y'] / cell_size
     n_local = len(particles['x'])
+    
+    # DEBUG: Check grid coordinate conversion
+    y_grid_min = float(np.min(y_grid))
+    y_grid_max = float(np.max(y_grid))
+    print(f"DEBUG: MPI rank {rank}: cell_size = {cell_size:.6f}", flush=True)
+    print(f"DEBUG: MPI rank {rank}: y_grid range: [{y_grid_min:.3f}, {y_grid_max:.3f}] (should be 0 to {ngrid})", flush=True)
+    
+    # Show all process domains in grid coordinates
+    print(f"DEBUG: MPI rank {rank}: All spatial domains in grid coordinates:", flush=True)
+    for i, (proc_y_min, proc_y_max) in enumerate(all_domains):
+        print(f"  Process {i}: y=[{proc_y_min:.1f}, {proc_y_max:.1f}]", flush=True)
     
     # Assign particles to destination processes
     dest_processes = np.zeros(n_local, dtype=np.int32)

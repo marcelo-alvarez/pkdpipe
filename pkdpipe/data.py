@@ -579,8 +579,9 @@ class Data:
         # Use list to collect chunks, then concatenate once at the end (memory efficient)
         data_chunks = []
         
-        # TEMP DEBUG: Limit to 1 chunk for fast testing
+        # Production chunk processing limit for throughput optimization  
         chunks_processed = 0
+        _log_info(f"🚀 CHUNK PROCESSING: Starting chunk processing (limit: 8 chunks per process)")
         
         while True:
             # Debug: Log first few chunks to verify assignment (verbose mode only)
@@ -600,10 +601,10 @@ class Data:
             # Read chunk data
             cdata = FileReader.read_chunk(filepath, dtype, offset, count)
             
-            # TEMPORARY: Only read first 4 chunks per process for incremental testing
+            # Chunk processing limit for production throughput
             assigned_chunks = sum(1 for i in range(chunk) if i % ntasks_divisor == task_id)
-            if assigned_chunks >= 4:
-                _log_info(f"DEBUG: SLURM process {task_id}: Stopping after 4 chunks for testing")
+            if assigned_chunks >= 8:
+                _log_info(f"🚀 CHUNK PROCESSING: SLURM process {task_id}: Processed {assigned_chunks} chunks (limit: 8)")
                 break
             
             if cdata.size == 0:
@@ -639,9 +640,10 @@ class Data:
             if chunk_data.size > 0:
                 data_chunks.append(chunk_data)
             
-            # TEMP DEBUG: Stop after 4 chunks for incremental testing
+            # Chunk processing limit for production throughput
             chunks_processed += 1
-            if chunks_processed >= 4:
+            if chunks_processed >= 8:
+                _log_info(f"🚀 CHUNK PROCESSING: Processed {chunks_processed} chunks (limit: 8)")
                 break
         
         # Concatenate all chunks once at the end (memory efficient)
