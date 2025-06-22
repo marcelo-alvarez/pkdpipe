@@ -29,7 +29,7 @@ from typing import Dict, Tuple, Optional
 
 # Suppress JAX TPU warnings globally
 import os
-os.environ['JAX_PLATFORMS'] = 'cpu,gpu'
+os.environ['JAX_PLATFORMS'] = 'cuda,cpu'  # CRITICAL: Use 'cuda,cpu' not 'cpu,gpu'
 
 import warnings
 import logging
@@ -82,7 +82,7 @@ def _ensure_jax_initialized():
             
             # Configure JAX after import
             jax_module.config.update("jax_enable_x64", False)  # Use 32-bit precision
-            jax_module.config.update("jax_platform_name", "gpu")  # Force GPU platform
+            # Do NOT set jax_platform_name - let JAX auto-detect from JAX_PLATFORMS env var
             
             # Store in global variables
             jax = jax_module
@@ -250,14 +250,9 @@ class PowerSpectrumCalculator:
         particle ends up on the process responsible for its spatial region.
         """
         
-        if JAX_AVAILABLE:
-            import jax
-            import jax.numpy as jnp
-            process_id = jax.process_index()
-            n_processes = jax.process_count()
-        else:
-            process_id = 0
-            n_processes = 1
+        # Use SLURM environment variables instead of JAX to avoid early JAX initialization
+        process_id = int(os.environ.get('SLURM_PROCID', '0'))
+        n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
         
         # Step 1: Redistribute particles based on spatial decomposition using MPI4py
         spatial_particles, y_min, y_max, base_y_min, base_y_max = redistribute_particles_mpi(

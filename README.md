@@ -13,7 +13,7 @@
 *   **Power Spectrum Analysis:** Complete power spectrum calculation with FFT, shot noise correction, and k-binning
 *   **Multi-GPU Support:** Distributed FFT computations and power spectrum calculations across multiple GPUs
 *   **Parameter Type System:** Comprehensive categorization of cosmological, SLURM, and simulation parameters
-*   **JAX Accelerated FFT:** Efficient Fast Fourier Transforms using JAX with distributed computing support
+*   **JAX Accelerated FFT:** Efficient Fast Fourier Transforms using JAX with distributed computing support and clean multiprocessing architecture
 *   **Command-Line Interface:** Access to functionalities via a CLI
 *   **Comprehensive Testing:** Validated against legacy implementations with extensive test coverage
 
@@ -27,12 +27,101 @@ pip install .
 
 ## Quick Start
 
+### Campaign Management
+
+```python
+from pkdpipe.campaign import Campaign, SimulationVariant, CampaignConfig
+
+# Create a new campaign
+config = CampaignConfig(
+    name="cosmosim-mocks-2025",
+    base_dir="/path/to/campaigns",
+    description="Cosmological mock catalog generation for 2025"
+)
+
+campaign = Campaign(config)
+
+# Add simulation variants
+variants = [
+    SimulationVariant("lcdm-validation", {"omegam": 0.315, "sigma8": 0.811}),
+    SimulationVariant("wcdm-validation", {"omegam": 0.315, "w0": -0.9}),
+    SimulationVariant("neff-validation", {"omegam": 0.315, "neff": 3.2})
+]
+
+for variant in variants:
+    campaign.add_variant(variant)
+
+# Initialize campaign structure
+campaign.initialize()
+
+# Submit simulations to SLURM
+campaign.submit_all()
+
+# Monitor campaign progress
+status = campaign.get_status()
+print(f"Campaign: {status.completed}/{status.total} simulations completed")
+```
+
+### Individual Simulation Setup
+
+```python
+from pkdpipe.simulation import Simulation
+from pkdpipe.config import get_preset_params
+
+# Create simulation with preset parameters
+sim_params = get_preset_params("S0-validation")
+sim_params.update({
+    "omegam": 0.315,
+    "sigma8": 0.811,
+    "ngrid": 512,
+    "boxsize": 1000.0  # Mpc/h
+})
+
+simulation = Simulation(
+    name="test-simulation",
+    campaign_dir="/path/to/campaign",
+    parameters=sim_params
+)
+
+# Setup directories and configuration files
+simulation.setup()
+
+# Generate SLURM submission script
+simulation.generate_slurm_script(
+    partition="gpu",
+    time="24:00:00",
+    nodes=4,
+    email="user@example.com"
+)
+
+# Submit to queue
+job_id = simulation.submit()
+print(f"Submitted job {job_id}")
+```
+
+### Command Line Interface
+
+```bash
+# Create a new simulation
+pkdpipe-create --name my-simulation --preset S0-validation --omegam 0.315
+
+# Create and manage campaigns
+pkdpipe-campaign create --name cosmosim-2025 --description "Mock catalogs"
+pkdpipe-campaign add-variant --campaign cosmosim-2025 --name lcdm-base
+pkdpipe-campaign submit --campaign cosmosim-2025
+pkdpipe-campaign status --campaign cosmosim-2025
+
+# Submit individual simulation
+pkdpipe-create --name test-run --submit --partition gpu --time 12:00:00
+```
+
 ### Basic Data Reading
 
 ```python
 from pkdpipe.data import Data
 
 # Initialize data interface
+# Note: For large files, use nproc=1 for multiprocessing-safe operation
 pkdata = Data(param_file="simulation.par", nproc=8, verbose=True)
 
 # Define bounding box [xmin,xmax], [ymin,ymax], [zmin,zmax]
@@ -107,6 +196,7 @@ from pkdpipe.data import Data
 from pkdpipe.power_spectrum import PowerSpectrumCalculator
 
 # Initialize data interface
+# Important: JAX is automatically imported only when FFT operations are needed
 pkdata = Data(param_file="simulation.par", nproc=8)
 
 # Fetch particle data
@@ -119,17 +209,19 @@ particles = pkdata.fetch_data(
     redshifts=[0.0]
 )
 
-# Extract positions for power spectrum calculation
-positions = np.column_stack([
-    particles['box0']['x'],
-    particles['box0']['y'], 
-    particles['box0']['z']
-])
+# Create particle dictionary for power spectrum calculation
+particle_data = {
+    'x': particles['box0']['x'],
+    'y': particles['box0']['y'], 
+    'z': particles['box0']['z'],
+    'mass': np.ones(len(particles['box0']['x']))  # Unit mass
+}
 
 # Calculate power spectrum
+# JAX initialization happens automatically during FFT operations
 calculator = PowerSpectrumCalculator(ngrid=256, box_size=1000.0)
 k_bins, power, n_modes = calculator.calculate_power_spectrum(
-    positions, 
+    particle_data, 
     subtract_shot_noise=True,
     assignment='cic'  # Cloud-in-cell assignment
 )
@@ -142,6 +234,7 @@ print(f"k range: {k_bins[0]:.3f} to {k_bins[-1]:.3f} h/Mpc")
 
 ```python
 # For large simulations, use multi-GPU acceleration
+# JAX distributed mode is automatically configured from SLURM environment
 calculator = PowerSpectrumCalculator(
     ngrid=512, 
     box_size=2000.0, 
@@ -158,8 +251,24 @@ calculator = PowerSpectrumCalculator(
 )
 
 k_bins, power, n_modes = calculator.calculate_power_spectrum(
-    positions,
+    particle_data,  # Dictionary format with x, y, z, mass
     subtract_shot_noise=True,
+    assignment='cic'
+)
+```
+
+### Distributed Processing with SLURM
+
+```python
+# For distributed computing on HPC systems
+# Example SLURM command:
+# srun -n 4 -c 32 python power_spectrum_analysis.py --ngrid 1024
+
+# The pipeline automatically detects distributed mode from SLURM environment
+# JAX distributed initialization happens only during FFT operations
+calculator = PowerSpectrumCalculator(ngrid=1024, box_size=2000.0)
+k_bins, power, n_modes = calculator.calculate_power_spectrum(
+    particle_data,
     assignment='cic'
 )
 ```
@@ -187,9 +296,108 @@ The refactored data module features a modular architecture for better maintainab
 - **Type Safety**: Full type hints and dataclasses for better code reliability
 - **Performance**: Optimized data processing with better memory management
 - **Multi-GPU Computing**: Distributed FFT and power spectrum calculations across multiple devices
+- **Clean Architecture**: JAX initialization separated from multiprocessing to prevent deadlocks
 - **Parameter Organization**: Clear separation of cosmological, SLURM, and simulation parameters
 - **Advanced Analytics**: Built-in power spectrum analysis with shot noise correction and k-binning
+- **Distributed Processing**: SLURM-aware coordination for HPC environments
 - **Backward Compatibility**: Maintains API compatibility with legacy code
+
+## Architecture and Execution Flow
+
+pkdpipe uses a clean three-phase architecture designed to prevent multiprocessing/threading conflicts:
+
+### Phase 1: Data Loading (CPU, Multiprocessing)
+- Pure NumPy and Python multiprocessing operations
+- **No JAX imports** - prevents CUDA initialization conflicts
+- Efficient I/O with configurable worker processes
+- SLURM-aware process coordination
+
+### Phase 2: Particle Gridding (CPU, Memory-Bound)
+- CPU-based particle-to-grid assignment (NGP, CIC, TSC)
+- Optimized for large memory (256GB RAM) on HPC systems
+- **No JAX dependencies** - maintains multiprocessing safety
+- Produces NumPy density grids ready for FFT transfer
+
+### Phase 3: FFT Operations (GPU, Compute-Intensive)
+- **Single point of JAX initialization** in the `fft()` function
+- NumPy → JAX array conversion for GPU processing
+- Distributed JAX FFT across multiple GPUs
+- Automatic SLURM environment detection and coordination
+
+This architecture ensures:
+- **No deadlocks**: JAX initialization happens after all multiprocessing completes
+- **Memory efficiency**: Keep particles on CPU (256GB) vs GPU (40GB per device)
+- **Clean separation**: Each phase uses optimal hardware and libraries
+- **HPC compatibility**: Designed for SLURM-managed distributed computing
+
+## Workflow Management
+
+pkdpipe provides comprehensive tools for managing large-scale simulation campaigns:
+
+### Campaign Lifecycle
+
+1. **Planning Phase**
+   ```python
+   # Define campaign with multiple variants
+   campaign = Campaign(config)
+   campaign.add_variant(SimulationVariant("lcdm-base", cosmo_params))
+   campaign.add_variant(SimulationVariant("wcdm-test", modified_params))
+   ```
+
+2. **Setup Phase**
+   ```python
+   # Initialize directory structure and configuration files
+   campaign.initialize()
+   # Creates: runs/, scratch/, logs/, results/ directories
+   # Generates: .par files, SLURM scripts, run.sh scripts
+   ```
+
+3. **Execution Phase**
+   ```python
+   # Submit all simulations to SLURM queue
+   job_ids = campaign.submit_all()
+   # Automatic dependency management and resource allocation
+   ```
+
+4. **Monitoring Phase**
+   ```python
+   # Real-time status monitoring
+   status = campaign.get_status()
+   print(f"Running: {status.running}, Completed: {status.completed}")
+   
+   # Check individual simulation status
+   for variant in campaign.variants:
+       print(f"{variant.name}: {variant.status}")
+   ```
+
+5. **Analysis Phase**
+   ```python
+   # Collect and analyze results
+   results = campaign.collect_results()
+   campaign.generate_summary_report()
+   ```
+
+### Status Tracking
+
+Campaign and simulation states are automatically tracked:
+
+- **Campaign States**: `PLANNED`, `INITIALIZED`, `SUBMITTED`, `RUNNING`, `COMPLETED`, `FAILED`
+- **Simulation States**: `CONFIGURED`, `SUBMITTED`, `QUEUED`, `RUNNING`, `COMPLETED`, `FAILED`, `CANCELLED`
+
+### Resource Management
+
+```python
+# Automatic resource allocation based on simulation size
+simulation.estimate_resources()  # Returns time, memory, node estimates
+
+# Custom resource specification
+simulation.set_resources(
+    nodes=8, 
+    time="48:00:00", 
+    partition="gpu",
+    constraint="a100"
+)
+```
 
 ## Supported Data Types
 
@@ -242,16 +450,91 @@ sim_params = separated.simulation
 
 This system ensures clean separation of concerns and prevents parameter conflicts between different pipeline components.
 
+## Configuration and Presets
+
+pkdpipe includes a comprehensive configuration system with built-in presets for common simulation types:
+
+### Available Presets
+
+| Preset | Description | Use Case |
+|--------|-------------|----------|
+| `S0-test` | Quick test runs | Development and debugging |
+| `S0-validation` | Medium-scale validation | Parameter validation and testing |
+| `S0-scaling` | Large-scale performance testing | Scaling studies and optimization |
+| `S0-production` | Full production runs | Scientific production simulations |
+
+### Configuration Management
+
+```python
+from pkdpipe.config import Config, get_preset_params, get_cosmology_preset
+
+# Load simulation preset
+params = get_preset_params("S0-validation")
+print(f"Grid size: {params['ngrid']}")
+print(f"Box size: {params['boxsize']} Mpc/h")
+
+# Load cosmological parameters
+cosmo = get_cosmology_preset("planck2018")
+print(f"Omega_m: {cosmo['omegam']}")
+print(f"sigma_8: {cosmo['sigma8']}")
+
+# Environment-specific paths
+config = Config()
+print(f"Scratch directory: {config.SCRATCH}")
+print(f"CFS directory: {config.CFS}")
+
+# Customize parameters for specific runs
+custom_params = get_preset_params("S0-production")
+custom_params.update({
+    "omegam": 0.31,  # Custom cosmology
+    "sigma8": 0.82,
+    "ngrid": 1024,   # Higher resolution
+    "nsteps": 100    # More timesteps
+})
+```
+
+### Environment Setup
+
+pkdpipe automatically detects and configures paths based on your environment:
+
+```python
+# Required environment variables
+export SCRATCH="/path/to/scratch"    # High-speed scratch storage
+export CFS="/path/to/cfs"           # Persistent storage
+export USER="username"              # Username for directory creation
+export pkdgravemail="user@domain"   # Email for job notifications
+
+# Optional: Customize JAX/GPU settings
+export JAX_PLATFORMS="cuda,cpu"     # Prefer CUDA over CPU
+export CUDA_VISIBLE_DEVICES="0,1,2,3"  # Control GPU visibility
+```
+
 ## Examples
 
 The `/examples` directory contains comprehensive examples:
 
+### Campaign and Simulation Management
+*   **`create_campaign.py`**: Complete campaign setup and management workflow
+*   **`submit_simulation.py`**: Individual simulation creation and submission
+*   **`monitor_campaign.py`**: Campaign status monitoring and result collection
+
+### Data Analysis
 *   **`readparticles.py`**: Particle data reading and comparison between implementations
 *   **`lightcone_particles.py`**: Lightcone particle analysis and visualization
-*   **`halos.py`**: Halo catalog analysis
-*   **`matterpower.py`**: Matter power spectrum calculations
-*   **`transfer.py`**: Transfer function analysis
+*   **`halos.py`**: Halo catalog analysis and mass function calculation
+*   **`power_spectrum_real_data.py`**: Power spectrum analysis of simulation data
+*   **`matterpower.py`**: Matter power spectrum calculations with shot noise correction
+*   **`transfer.py`**: Transfer function analysis and comparison with theory
+
+### Validation and Testing
 *   **`compare_*.py`**: Validation scripts comparing legacy vs refactored implementations
+*   **`benchmark_performance.py`**: Performance benchmarking and scaling tests
+*   **`validate_cosmology.py`**: Cosmological parameter validation against known results
+
+### Advanced Usage
+*   **`custom_parameters.py`**: Advanced parameter customization and preset modification
+*   **`distributed_processing.py`**: Multi-GPU and distributed computing examples
+*   **`data_streaming.py`**: Large dataset processing with streaming mode
 
 ## Performance
 
@@ -273,3 +556,38 @@ Run tests with:
 ```bash
 python -m pytest tests/
 ```
+
+## Troubleshooting
+
+### JAX/Multiprocessing Issues
+
+**Problem**: `RuntimeWarning: os.fork() was called. os.fork() is incompatible with multithreaded code, and JAX is multithreaded`
+
+**Solution**: pkdpipe's architecture prevents this by ensuring JAX is only imported during FFT operations, after all multiprocessing completes. If you encounter this warning, ensure you're using the latest version.
+
+### Large File Processing
+
+**Problem**: Memory issues or slow performance with large simulation files
+
+**Solution**: 
+- Use `nproc=1` for very large files to avoid multiprocessing overhead
+- The pipeline automatically optimizes for CPU-based processing of large particle datasets
+- Gridding operations are designed to be memory-bound on CPU rather than GPU
+
+### Distributed Computing on HPC
+
+**Problem**: Jobs hang or fail to initialize in distributed mode
+
+**Solution**:
+- Ensure SLURM environment variables are properly set
+- JAX distributed mode initialization is handled automatically
+- Use recommended SLURM command: `srun -n 4 -c 32 python script.py`
+
+### JAX Backend Issues
+
+**Problem**: JAX tries to use incorrect backend (e.g., 'rocm' instead of 'cuda')
+
+**Solution**: 
+- Set `JAX_PLATFORMS='cuda,cpu'` environment variable
+- The pipeline automatically configures JAX to use GPU platform
+- Check that CUDA is available in your environment

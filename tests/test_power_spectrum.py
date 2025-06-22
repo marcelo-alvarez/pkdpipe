@@ -25,8 +25,7 @@ try:
     
     # Use 32-bit precision to match our float32 grids and save memory
     jax.config.update("jax_enable_x64", False)
-    # Additional memory optimization settings
-    jax.config.update("jax_platform_name", "gpu")
+    # Do NOT set jax_platform_name - let JAX auto-detect from JAX_PLATFORMS env var
     
     JAX_AVAILABLE = True
     

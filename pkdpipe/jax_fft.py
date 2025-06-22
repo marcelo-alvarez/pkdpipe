@@ -68,15 +68,19 @@ def fft(x_np, direction='r2c'):
             except Exception as e:
                 print(f"JAX distributed initialization failed, continuing with single process: {e}", flush=True)
         
-        # Set JAX configuration
+        # Set JAX configuration to match main branch behavior
         jax.config.update("jax_enable_x64", False)  # Use 32-bit precision
-        jax.config.update("jax_platform_name", "gpu")  # Force GPU platform
+        # Do NOT set jax_platform_name - let JAX auto-detect from JAX_PLATFORMS env var
+        
+        # CRITICAL: Test JAX backend detection BEFORE using devices
+        print(f"JAX backend detected: {jax.default_backend()}", flush=True)
+        print(f"JAX devices available: {jax.devices()}", flush=True)
         
     except ImportError as e:
         print(f"JAX not available for FFT: {e}", flush=True)
         raise ImportError("JAX is required for FFT operations")
     
-    # Define JAX FFT functions (now that JAX is imported)
+    # Define JAX FFT functions (now that JAX is imported and configured)
     def _fft_XY(x):
         return jax.numpy.fft.fftn(x, axes=[0, 1])
 
@@ -115,53 +119,20 @@ def fft(x_np, direction='r2c'):
     rfftn = lambda x: fft_Z(fft_XY(x))
     irfftn = lambda x: ifft_XY(ifft_Z(x))
     
-    num_gpus = jax.device_count()
-
-    global_shape = (x_np.shape[0], x_np.shape[1]*num_gpus, x_np.shape[2])
-
-    devices = mesh_utils.create_device_mesh((num_gpus,))
-    mesh = Mesh(devices, axis_names=('gpus',))
-    with mesh:
-        print(f"CRITICAL MEMORY TRANSFER: Converting NumPy density grid {x_np.shape} {x_np.dtype} from CPU to JAX arrays on GPU", flush=True)
-        print(f"Memory transfer size: {x_np.nbytes / (1024**3):.2f} GB", flush=True)
-        
-        # *** CRITICAL POINT: CPU NumPy → GPU JAX conversion happens HERE ***
-        # x_np is the density grid computed entirely on CPU using multiprocessing
-        # jax.device_put() transfers it to GPU memory as JAX arrays
-        x_single = jax.device_put(x_np).block_until_ready()
-        print(f"NumPy→JAX conversion complete, freeing CPU array", flush=True)
-        del x_np ; gc.collect()  # Free CPU memory immediately
-        
-        xshard = jax.make_array_from_single_device_arrays(
-            global_shape,
-            NamedSharding(mesh, P(None, "gpus")),
-            [x_single]).block_until_ready()
-        del x_single ; gc.collect()
-        
-        if direction=='r2c':
-            rfftn_jit = jit(
-                rfftn,
-                in_shardings=(NamedSharding(mesh, P(None, "gpus"))),
-                out_shardings=(NamedSharding(mesh, P(None, "gpus")))
-            )
-        else:
-            irfftn_jit = jit(
-                irfftn,
-                in_shardings=(NamedSharding(mesh, P(None, "gpus"))),
-                out_shardings=(NamedSharding(mesh, P(None, "gpus")))
-            )
-        sync_global_devices("wait for compiler output")
-
-        with jax.spmd_mode('allow_all'):
-            print(f"Starting distributed JAX FFT computation...", flush=True)
-            if direction=='r2c':
-                out_jit = rfftn_jit(xshard).block_until_ready()
-            else:
-                out_jit = irfftn_jit(xshard).block_until_ready()
-            sync_global_devices("loop")
-            
-            print(f"JAX FFT complete, converting result back to NumPy", flush=True)
-            local_out_subset = out_jit.addressable_data(0)
-            
-    # Convert back to NumPy for compatibility with downstream processing
-    return np.array(local_out_subset)
+    print(f"CRITICAL MEMORY TRANSFER: Converting NumPy density grid {x_np.shape} {x_np.dtype} from CPU to JAX arrays on GPU", flush=True)
+    print(f"Memory transfer size: {x_np.nbytes / (1024**3):.2f} GB", flush=True)
+    
+    # Simple JAX FFT - works for both single-process and distributed modes
+    # Each process handles its own data (slab in distributed mode, full grid in single-process mode)
+    x_jax = jax.device_put(x_np).block_until_ready()
+    print(f"NumPy→JAX conversion complete, freeing CPU array", flush=True)
+    del x_np ; gc.collect()
+    
+    print(f"Starting JAX FFT computation...", flush=True)
+    if direction=='r2c':
+        result = jax.numpy.fft.rfftn(x_jax)
+    else:
+        result = jax.numpy.fft.irfftn(x_jax)
+    
+    print(f"JAX FFT complete, converting result back to NumPy", flush=True)
+    return np.array(result)
