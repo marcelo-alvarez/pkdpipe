@@ -1016,7 +1016,7 @@ def redistribute_particles_mpi(particles, assignment_scheme, ngrid, box_size):
     
     print(f"DEBUG: MPI rank {rank}: kept {len(my_particles['x'])} own particles", flush=True)
     
-    # Phase 2: Non-blocking sends to all other processes
+    # Phase 2: Non-blocking chunked sends to all other processes
     send_requests = []
     for dest_proc in range(size):
         if dest_proc != rank:
@@ -1025,27 +1025,24 @@ def redistribute_particles_mpi(particles, assignment_scheme, ngrid, box_size):
             
             if send_count > 0:
                 print(f"DEBUG: MPI rank {rank}: sending {send_count} particles to rank {dest_proc}", flush=True)
-                for key in ['x', 'y', 'z', 'mass']:
-                    tag = dest_proc * 4 + ['x', 'y', 'z', 'mass'].index(key)  # Unique tag per dest+key
-                    req = comm.isend(send_particles[key], dest=dest_proc, tag=tag)
-                    send_requests.append(req)
+                # Use chunked send to avoid large message problems
+                chunk_requests = chunked_mpi_isend(send_particles, dest_proc, comm, chunk_size_mb=512)
+                send_requests.extend(chunk_requests)
     
-    # Phase 3: Blocking receives from all other processes  
+    # Phase 3: Blocking chunked receives from all other processes  
     for src_proc in range(size):
         if src_proc != rank:
             recv_count = recv_counts[src_proc]
             
             if recv_count > 0:
                 print(f"DEBUG: MPI rank {rank}: receiving {recv_count} particles from rank {src_proc}", flush=True)
-                recv_particles = {}
-                for key in ['x', 'y', 'z', 'mass']:
-                    tag = rank * 4 + ['x', 'y', 'z', 'mass'].index(key)  # Unique tag per dest+key
-                    recv_data = comm.recv(source=src_proc, tag=tag)
-                    recv_particles[key] = recv_data
+                # Use chunked receive to handle large messages
+                recv_particles = chunked_mpi_recv(src_proc, comm)
                 
                 # Add received particles
                 for key in ['x', 'y', 'z', 'mass']:
-                    redistributed_particles[key].append(recv_particles[key])
+                    if len(recv_particles[key]) > 0:
+                        redistributed_particles[key].append(recv_particles[key])
     
     # Phase 4: Wait for all sends to complete
     print(f"DEBUG: MPI rank {rank}: waiting for {len(send_requests)} send operations to complete", flush=True)
@@ -1407,36 +1404,108 @@ def redistribute_particles_spatial(particles, assignment_scheme, ngrid, box_size
     return redistributed_particles, my_y_min, my_y_max, base_y_min, base_y_max
 
 
-class ParticleDataReader:
+def chunked_mpi_isend(particles, dest_proc, comm, chunk_size_mb=512):
     """
-    Simple wrapper to make particle dictionary compatible with streaming interface.
+    Send large particle arrays in manageable chunks using non-blocking MPI.
     
-    This allows the automatic streaming fallback to work with pre-loaded particle data
-    by chunking it on-the-fly.
+    This function breaks large particle arrays into smaller chunks to avoid
+    MPI message size limits and Cray MPI shared memory bugs on Perlmutter.
+    
+    Args:
+        particles: Dictionary with 'x', 'y', 'z', 'mass' arrays
+        dest_proc: Destination MPI process rank
+        comm: MPI communicator
+        chunk_size_mb: Maximum chunk size in MB (default 512MB)
+        
+    Returns:
+        List of MPI request objects for all chunks
     """
+    import numpy as np
     
-    def __init__(self, particles: Dict[str, np.ndarray], chunk_size_gb: float = 2.0):
-        self.particles = particles
-        self.chunk_size_gb = chunk_size_gb
+    n_particles = len(particles['x'])
+    if n_particles == 0:
+        return []
+    
+    # Calculate particles per chunk (4 fields × 4 bytes per particle)
+    bytes_per_particle = 4 * 4  
+    particles_per_chunk = max(1, (chunk_size_mb * 1024**2) // bytes_per_particle)
+    
+    # Calculate number of chunks needed
+    n_chunks = (n_particles + particles_per_chunk - 1) // particles_per_chunk
+    
+    print(f"DEBUG: MPI rank {comm.Get_rank()}: sending {n_particles} particles to rank {dest_proc} in {n_chunks} chunks", flush=True)
+    
+    requests = []
+    
+    # Send metadata first (number of particles and chunks)
+    metadata = {'n_particles': n_particles, 'n_chunks': n_chunks}
+    tag_metadata = dest_proc * 1000  # Base tag for metadata
+    req = comm.isend(metadata, dest=dest_proc, tag=tag_metadata)
+    requests.append(req)
+    
+    # Send chunks
+    for chunk_idx in range(n_chunks):
+        start = chunk_idx * particles_per_chunk
+        end = min(start + particles_per_chunk, n_particles)
         
-    def fetch_data_chunked(self):
-        """Generator that yields particle data in chunks."""
-        n_particles = len(self.particles['x'])
+        # Create chunk
+        chunk = {}
+        for key in ['x', 'y', 'z', 'mass']:
+            chunk[key] = particles[key][start:end]
         
-        # Calculate chunk size based on memory target
-        bytes_per_particle = 4 * 8  # 4 fields × 8 bytes
-        target_chunk_bytes = int(self.chunk_size_gb * 1024**3)
-        particles_per_chunk = target_chunk_bytes // bytes_per_particle
+        # Send chunk with unique tag
+        tag_chunk = dest_proc * 1000 + chunk_idx + 1  # +1 to avoid metadata tag
+        req = comm.isend(chunk, dest=dest_proc, tag=tag_chunk)
+        requests.append(req)
+    
+    return requests
+
+
+def chunked_mpi_recv(src_proc, comm):
+    """
+    Receive large particle arrays sent in chunks using blocking MPI.
+    
+    This function receives particle arrays that were sent using chunked_mpi_isend.
+    
+    Args:
+        src_proc: Source MPI process rank
+        comm: MPI communicator
         
-        # Yield chunks
-        for start_idx in range(0, n_particles, particles_per_chunk):
-            end_idx = min(start_idx + particles_per_chunk, n_particles)
-            
-            chunk = {
-                'x': self.particles['x'][start_idx:end_idx],
-                'y': self.particles['y'][start_idx:end_idx], 
-                'z': self.particles['z'][start_idx:end_idx],
-                'mass': self.particles['mass'][start_idx:end_idx]
-            }
-            
-            yield chunk
+    Returns:
+        Dictionary with 'x', 'y', 'z', 'mass' arrays
+    """
+    import numpy as np
+    
+    my_rank = comm.Get_rank()
+    
+    # Receive metadata first
+    tag_metadata = my_rank * 1000
+    metadata = comm.recv(source=src_proc, tag=tag_metadata)
+    n_particles = metadata['n_particles']
+    n_chunks = metadata['n_chunks']
+    
+    print(f"DEBUG: MPI rank {my_rank}: receiving {n_particles} particles from rank {src_proc} in {n_chunks} chunks", flush=True)
+    
+    if n_particles == 0:
+        return {'x': np.array([]), 'y': np.array([]), 'z': np.array([]), 'mass': np.array([])}
+    
+    # Initialize result arrays
+    particles = {'x': [], 'y': [], 'z': [], 'mass': []}
+    
+    # Receive chunks
+    for chunk_idx in range(n_chunks):
+        tag_chunk = my_rank * 1000 + chunk_idx + 1
+        chunk = comm.recv(source=src_proc, tag=tag_chunk)
+        
+        # Accumulate chunk data
+        for key in ['x', 'y', 'z', 'mass']:
+            particles[key].append(chunk[key])
+    
+    # Concatenate all chunks
+    for key in ['x', 'y', 'z', 'mass']:
+        if particles[key]:
+            particles[key] = np.concatenate(particles[key])
+        else:
+            particles[key] = np.array([])
+    
+    return particles
