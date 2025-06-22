@@ -50,17 +50,51 @@ try:
     os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
     os.environ.setdefault('XLA_PYTHON_CLIENT_MEM_FRACTION', '0.7')
     
-    import jax
-    import jax.numpy as jnp
-    # Use 32-bit precision to match our float32 grids and save memory
-    jax.config.update("jax_enable_x64", False)
-    # Additional memory optimization settings
-    jax.config.update("jax_platform_name", "gpu")
+    # JAX imports are deferred until after multiprocessing is complete
+    # This prevents CUDA initialization conflicts with multiprocessing.Pool
     JAX_AVAILABLE = True
 except ImportError:
-    jax = None
-    jnp = None
     JAX_AVAILABLE = False
+
+# Global variables for JAX modules (initialized after multiprocessing)
+jax = None
+jnp = None
+
+def _ensure_jax_initialized():
+    """
+    Safely import and initialize JAX after multiprocessing is complete.
+    
+    This function should be called before any JAX operations to avoid
+    CUDA initialization conflicts with multiprocessing.Pool.
+    
+    Returns:
+        tuple: (jax, jax.numpy) modules, or (None, None) if JAX unavailable
+    """
+    global jax, jnp, JAX_AVAILABLE
+    
+    if not JAX_AVAILABLE:
+        return None, None
+    
+    if jax is None:
+        try:
+            import jax as jax_module
+            import jax.numpy as jnp_module
+            
+            # Configure JAX after import
+            jax_module.config.update("jax_enable_x64", False)  # Use 32-bit precision
+            jax_module.config.update("jax_platform_name", "gpu")  # Force GPU platform
+            
+            # Store in global variables
+            jax = jax_module
+            jnp = jnp_module
+            
+            print("JAX initialized successfully after multiprocessing", flush=True)
+        except ImportError as e:
+            print(f"JAX initialization failed: {e}", flush=True)
+            JAX_AVAILABLE = False
+            return None, None
+    
+    return jax, jnp
 
 from .jax_fft import fft
 from .particle_gridder import ParticleGridder
@@ -120,17 +154,9 @@ class PowerSpectrumCalculator:
         
         # Show initialization info only from master process
         from .multi_gpu_utils import is_distributed_mode
-        process_id = 0
+        process_id = int(os.environ.get('SLURM_PROCID', '0'))  # Use SLURM info instead of JAX
         is_distributed = is_distributed_mode()
-        n_processes = 1
-        
-        if is_distributed:
-            try:
-                import jax
-                process_id = jax.process_index()
-                n_processes = jax.process_count()
-            except:
-                pass
+        n_processes = int(os.environ.get('SLURM_NTASKS', '1'))  # Use SLURM info instead of JAX
         
         if process_id == 0:
             print(f"PowerSpectrumCalculator initialized:")
@@ -141,6 +167,7 @@ class PowerSpectrumCalculator:
             print(f"  k-range: {self.k_bins[0]:.6f} to {self.k_bins[-1]:.6f} h/Mpc")
             if is_distributed:
                 print(f"  JAX Distributed Mode: ENABLED ({n_processes} processes)")
+                print(f"  JAX will be initialized after multiprocessing is complete")
             else:
                 print(f"  JAX Distributed Mode: DISABLED (using {n_devices} device(s))")
     
@@ -234,36 +261,52 @@ class PowerSpectrumCalculator:
         spatial_particles, y_min, y_max, base_y_min, base_y_max = redistribute_particles_mpi(
             particles, assignment, self.ngrid, self.box_size
         )
-        if JAX_AVAILABLE:
-            import jax
-            process_id = jax.process_index()
-            print(f"Process {process_id}: MPI redistribution complete, have {len(spatial_particles['x'])} particles", flush=True)
-
+        
+        # Get process info without JAX (use SLURM environment)
+        process_id = int(os.environ.get('SLURM_PROCID', '0'))
+        n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
+        print(f"Process {process_id}: MPI redistribution complete, have {len(spatial_particles['x'])} particles", flush=True)
+            
+        # Calculate and store global particle count for density diagnostics
+        local_particle_count = len(spatial_particles['x'])
+        
+        # Use MPI to calculate global particle count (more reliable than JAX collective)
+        try:
+            from mpi4py import MPI
+            comm = MPI.COMM_WORLD
+            self._global_total_particles = comm.allreduce(local_particle_count, op=MPI.SUM)
+            print(f"Process {process_id}: Global particle count (MPI): {self._global_total_particles}, local: {local_particle_count}", flush=True)
+        except ImportError:
+            # Fallback: estimate from local count and process count
+            self._global_total_particles = local_particle_count * n_processes
+            print(f"Process {process_id}: Estimated global particle count: {self._global_total_particles}, local: {local_particle_count}", flush=True)
+            
         # Step 2: Create spatial slab grid (not full grid)
         slab_height = base_y_max - base_y_min
         
-        if JAX_AVAILABLE:
-            import jax
-            process_id = jax.process_index()
-            print(f"Process {process_id}: About to start gridding to slab {self.ngrid}x{slab_height}x{self.ngrid}", flush=True)
+        print(f"Process {process_id}: About to start gridding to slab {self.ngrid}x{slab_height}x{self.ngrid}", flush=True)
         
-        # Grid particles to slab including ghost zones
+        # === CRITICAL: Grid particles to slab including ghost zones ===
+        # This call uses multiprocessing and must complete before JAX initialization
         full_slab = gridder.particles_to_slab(spatial_particles, y_min, y_max, self.ngrid)
         
-        if JAX_AVAILABLE:
-            import jax
-            process_id = jax.process_index()
-            print(f"Process {process_id}: Gridding complete, full_slab shape: {full_slab.shape}", flush=True)
+        print(f"Process {process_id}: Gridding complete, full_slab shape: {full_slab.shape}", flush=True)
+        
+        # === SAFE POINT: Initialize JAX after multiprocessing is complete ===
+        jax, jnp = _ensure_jax_initialized()
+        if jax is not None:
+            process_id = jax.process_index()  # Now safe to use JAX
+            print(f"Process {process_id}: JAX initialized after gridding", flush=True)
         
         # MPI Barrier: Wait for all processes to complete gridding before proceeding to JAX operations
         try:
             from mpi4py import MPI
             comm = MPI.COMM_WORLD
-            if JAX_AVAILABLE:
+            if jax is not None:
                 process_id = jax.process_index()
                 print(f"Process {process_id}: Entering MPI barrier after gridding", flush=True)
             comm.Barrier()
-            if JAX_AVAILABLE:
+            if jax is not None:
                 process_id = jax.process_index()
                 print(f"Process {process_id}: Exiting MPI barrier after gridding", flush=True)
         except ImportError:
@@ -278,7 +321,7 @@ class PowerSpectrumCalculator:
         
         # Step 3: Calculate mean density and density contrast  
         local_mass = np.sum(owned_slab)
-        if JAX_AVAILABLE:
+        if jax is not None:
             # In distributed mode, just use local mass times process count as approximation
             # This avoids JAX collective operation issues for now
             total_mass = local_mass * jax.process_count()
@@ -292,15 +335,17 @@ class PowerSpectrumCalculator:
         if mean_density > 0:
             delta_slab = (owned_slab - mean_density) / mean_density
         else:
-            delta_slab = owned_slab.astype(jnp.float32)
+            if jnp is not None:
+                delta_slab = owned_slab.astype(jnp.float32)
+            else:
+                delta_slab = owned_slab.astype(np.float32)
         
         # Store diagnostics (skip if mean density is zero)
         if mean_density > 0:
             self._store_density_diagnostics(owned_slab, delta_slab, len(spatial_particles['x']))
         
         # Step 4: Distributed FFT on spatial slabs (input) -> k-space slabs (output)
-        if JAX_AVAILABLE:
-            import jax
+        if jax is not None:
             process_id = jax.process_index()
             print(f"Process {process_id}: About to call FFT with delta_slab shape {delta_slab.shape}", flush=True)
             delta_k_slab = fft(delta_slab, direction='r2c')  # JAX distributed FFT: spatial slab -> k-space slab
@@ -329,8 +374,11 @@ class PowerSpectrumCalculator:
                            gridder: ParticleGridder, subtract_shot_noise: bool,
                            assignment: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Calculate power spectrum in single-process multi-GPU mode."""
-        # Use domain decomposition within process
+        # Use domain decomposition within process (this may use multiprocessing)
         device_grids = gridder.particles_to_grid(particles, self.n_devices)
+        
+        # === SAFE POINT: Initialize JAX after multiprocessing is complete ===
+        jax, jnp = _ensure_jax_initialized()
         
         # Calculate global mean density for normalization
         total_mass = np.sum([grid.sum() for grid in device_grids])
@@ -352,8 +400,12 @@ class PowerSpectrumCalculator:
         delta_k = fft(full_delta_grid, direction='r2c')
         
         # Calculate power spectrum
-        power_3d = jnp.abs(delta_k)**2 * (self.volume / self.ngrid**6)
-        power_3d_np = np.array(power_3d)
+        if jnp is not None:
+            power_3d = jnp.abs(delta_k)**2 * (self.volume / self.ngrid**6)
+            power_3d_np = np.array(power_3d)
+        else:
+            power_3d = np.abs(delta_k)**2 * (self.volume / self.ngrid**6)
+            power_3d_np = power_3d
         
         # Create k-grid and apply corrections
         k_grid = create_full_k_grid(self.ngrid, self.box_size)
@@ -371,8 +423,12 @@ class PowerSpectrumCalculator:
                                gridder: ParticleGridder, subtract_shot_noise: bool,
                                assignment: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Calculate power spectrum on single GPU/CPU."""
-        # Single device gridding
+        # Single device gridding (may use multiprocessing)
         density_grid = gridder.particles_to_grid(particles, 1)
+        
+        # === SAFE POINT: Initialize JAX after multiprocessing is complete ===
+        jax, jnp = _ensure_jax_initialized()
+        
         mean_density = density_grid.mean()
         
         if mean_density <= 0:
@@ -384,7 +440,7 @@ class PowerSpectrumCalculator:
         self._store_density_diagnostics(density_grid, delta_grid, len(particles['x']))
         
         # Single GPU/CPU FFT
-        if JAX_AVAILABLE:
+        if jnp is not None:
             delta_k = jnp.fft.rfftn(delta_grid)
             power_3d = jnp.abs(delta_k)**2 * (self.volume / self.ngrid**6)
             power_3d_np = np.array(power_3d)
@@ -498,13 +554,8 @@ class PowerSpectrumCalculator:
         gridder = ParticleGridder(self.ngrid, self.box_size, assignment)
         total_particles = 0
         
-        # Get process ID for logging
-        process_id = 0
-        try:
-            import jax
-            process_id = jax.process_index()
-        except:
-            pass
+        # Get process ID for logging (use SLURM info instead of JAX)
+        process_id = int(os.environ.get('SLURM_PROCID', '0'))
         
         print(f"Processing particles in chunks (distributed mode)...")
         chunk_count = 0
@@ -855,11 +906,8 @@ def redistribute_particles_mpi(particles, assignment_scheme, ngrid, box_size):
         )
         return particles, my_y_min, my_y_max, base_y_min, base_y_max
     
-    if JAX_AVAILABLE:
-        import jax
-        import jax.numpy as jnp
-    else:
-        import numpy as jnp
+    # Use numpy for array operations (JAX will be initialized later if needed)
+    import numpy as np
     
     # Calculate my spatial domain
     my_y_min, my_y_max, base_y_min, base_y_max = get_spatial_domain_with_ghosts(
@@ -883,16 +931,16 @@ def redistribute_particles_mpi(particles, assignment_scheme, ngrid, box_size):
     n_local = len(particles['x'])
     
     # Assign particles to destination processes
-    dest_processes = jnp.zeros(n_local, dtype=jnp.int32)
+    dest_processes = np.zeros(n_local, dtype=np.int32)
     for i, (proc_y_min, proc_y_max) in enumerate(all_domains):
         in_proc_domain = (y_grid >= proc_y_min) & (y_grid < proc_y_max)
-        dest_processes = jnp.where(in_proc_domain, i, dest_processes)
+        dest_processes = np.where(in_proc_domain, i, dest_processes)
     
     # Step 2: Count particles going to each process
-    send_counts = jnp.zeros(size, dtype=jnp.int32)
+    send_counts = np.zeros(size, dtype=np.int32)
     for dest_proc in range(size):
-        count_to_dest = int(jnp.sum(dest_processes == dest_proc))
-        send_counts = send_counts.at[dest_proc].set(count_to_dest)
+        count_to_dest = int(np.sum(dest_processes == dest_proc))
+        send_counts[dest_proc] = count_to_dest
     
     print(f"DEBUG: MPI rank {rank}: sending {send_counts} particles to each process", flush=True)
     
@@ -986,7 +1034,7 @@ def redistribute_particles_mpi(particles, assignment_scheme, ngrid, box_size):
     if total_recv > 0:
         final_y_grid = redistributed_particles['y'] / cell_size
         in_domain_check = (final_y_grid >= my_y_min) & (final_y_grid < my_y_max)
-        final_in_domain = int(jnp.sum(in_domain_check))
+        final_in_domain = int(np.sum(in_domain_check))
         print(f"DEBUG: MPI rank {rank}: {final_in_domain}/{total_recv} particles verified in correct domain", flush=True)
     
     # MPI Barrier: Ensure all processes complete redistribution before proceeding
@@ -1016,14 +1064,9 @@ def redistribute_particles_sequential_read(data_reader, assignment_scheme, ngrid
     """
     print(f"DEBUG: Starting sequential read with spatial distribution", flush=True)
     
-    if JAX_AVAILABLE:
-        import jax
-        import jax.numpy as jnp
-        process_id = jax.process_index()
-        n_processes = jax.process_count()
-    else:
-        process_id = 0
-        n_processes = 1
+    # Use SLURM environment variables instead of JAX for process information
+    process_id = int(os.environ.get('SLURM_PROCID', '0'))
+    n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
         
     # Calculate my spatial domain
     my_y_min, my_y_max, base_y_min, base_y_max = get_spatial_domain_with_ghosts(
@@ -1144,15 +1187,13 @@ def redistribute_particles_spatial(particles, assignment_scheme, ngrid, box_size
     """
     print(f"DEBUG: redistribute_particles_spatial starting with selective all-to-all...", flush=True)
     
-    if JAX_AVAILABLE:
-        import jax
-        import jax.numpy as jnp
-        process_id = jax.process_index()
-        n_processes = jax.process_count()
-        print(f"DEBUG: Process {process_id}: redistributing {len(particles['x'])} particles", flush=True)
-    else:
-        process_id = 0
-        n_processes = 1
+    # Use numpy for array operations (JAX will be initialized later if needed)
+    import numpy as np
+    
+    # Use SLURM environment variables instead of JAX for process information
+    process_id = int(os.environ.get('SLURM_PROCID', '0'))
+    n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
+    print(f"DEBUG: Process {process_id}: redistributing {len(particles['x'])} particles", flush=True)
         
     # Calculate spatial domains with ghost zones
     my_y_min, my_y_max, base_y_min, base_y_max = get_spatial_domain_with_ghosts(
@@ -1179,32 +1220,32 @@ def redistribute_particles_spatial(particles, assignment_scheme, ngrid, box_size
         n_local = len(particles['x'])
         
         # DEBUG: Check spatial distribution of local particles
-        y_min_local = float(jnp.min(particles['y']))
-        y_max_local = float(jnp.max(particles['y']))
-        y_grid_min = float(jnp.min(y_grid))
-        y_grid_max = float(jnp.max(y_grid))
+        y_min_local = float(np.min(particles['y']))
+        y_max_local = float(np.max(particles['y']))
+        y_grid_min = float(np.min(y_grid))
+        y_grid_max = float(np.max(y_grid))
         print(f"DEBUG: Process {process_id}: Local particle y-range = [{y_min_local:.1f}, {y_max_local:.1f}] Mpc/h", flush=True)
         print(f"DEBUG: Process {process_id}: Local particle y-grid range = [{y_grid_min:.1f}, {y_grid_max:.1f}] cells", flush=True)
         
         # Assign each particle to a destination process based on y-coordinate
-        dest_processes = jnp.zeros(n_local, dtype=jnp.int32)
+        dest_processes = np.zeros(n_local, dtype=np.int32)
         for i, (proc_y_min, proc_y_max) in enumerate(all_domains):
             in_proc_domain = (y_grid >= proc_y_min) & (y_grid < proc_y_max)
-            dest_processes = jnp.where(in_proc_domain, i, dest_processes)
-            n_in_domain = int(jnp.sum(in_proc_domain))
+            dest_processes = np.where(in_proc_domain, i, dest_processes)
+            n_in_domain = int(np.sum(in_proc_domain))
             print(f"DEBUG: Process {process_id}: {n_in_domain} particles belong to process {i} domain [{proc_y_min}, {proc_y_max}]", flush=True)
         
         print(f"DEBUG: Process {process_id}: assigned {n_local} particles to destination processes", flush=True)
         
         # Step 3: Group particles by destination process
         particles_by_dest = {}
-        send_counts = jnp.zeros(n_processes, dtype=jnp.int32)
+        send_counts = np.zeros(n_processes, dtype=np.int32)
         
         for dest_proc in range(n_processes):
             # Find particles going to this destination
             going_to_dest = (dest_processes == dest_proc)
-            count_to_dest = int(jnp.sum(going_to_dest))
-            send_counts = send_counts.at[dest_proc].set(count_to_dest)
+            count_to_dest = int(np.sum(going_to_dest))
+            send_counts[dest_proc] = count_to_dest
             
             # Extract particles for this destination
             dest_particles = {}
@@ -1303,7 +1344,7 @@ def redistribute_particles_spatial(particles, assignment_scheme, ngrid, box_size
             if domain_particles > 0:
                 final_y_grid = redistributed_particles['y'] / cell_size
                 in_domain_check = (final_y_grid >= my_y_min) & (final_y_grid < my_y_max)
-                final_in_domain = int(jnp.sum(in_domain_check))
+                final_in_domain = int(np.sum(in_domain_check))
                 print(f"DEBUG: Process {process_id}: {final_in_domain}/{domain_particles} particles verified in correct domain", flush=True)
             
         except Exception as e:
