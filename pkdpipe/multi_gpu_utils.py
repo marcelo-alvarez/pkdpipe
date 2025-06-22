@@ -17,14 +17,51 @@ Example usage:
 import numpy as np
 from typing import Tuple, Optional
 
+# JAX imports are deferred to avoid CUDA initialization conflicts with multiprocessing
+# JAX will be imported when first needed by calling _ensure_jax_initialized()
 try:
-    import jax
-    import jax.numpy as jnp
-    JAX_AVAILABLE = True
+    # Test if JAX is available without importing it
+    import importlib.util
+    spec = importlib.util.find_spec("jax")
+    JAX_AVAILABLE = spec is not None
 except ImportError:
-    jax = None
-    jnp = None
     JAX_AVAILABLE = False
+
+# Global variables for JAX modules (initialized when first needed)
+jax = None
+jnp = None
+
+
+def _ensure_jax_initialized():
+    """
+    Safely import and initialize JAX when first needed.
+    
+    This function should be called before any JAX operations to avoid
+    CUDA initialization conflicts with multiprocessing.Pool.
+    
+    Returns:
+        tuple: (jax, jax.numpy) modules, or (None, None) if JAX unavailable
+    """
+    global jax, jnp, JAX_AVAILABLE
+    
+    if not JAX_AVAILABLE:
+        return None, None
+    
+    if jax is None:
+        try:
+            import jax as jax_module
+            import jax.numpy as jnp_module
+            
+            # Store in global variables
+            jax = jax_module
+            jnp = jnp_module
+            
+        except ImportError as e:
+            print(f"JAX initialization failed in multi_gpu_utils: {e}", flush=True)
+            JAX_AVAILABLE = False
+            return None, None
+    
+    return jax, jnp
 
 
 def is_distributed_mode() -> bool:
@@ -37,10 +74,13 @@ def is_distributed_mode() -> bool:
     if not JAX_AVAILABLE:
         return False
     
+    jax_module, _ = _ensure_jax_initialized()
+    if jax_module is None:
+        return False
+        
     try:
-        import jax
         # Simply check if JAX is already in distributed mode
-        process_count = jax.process_count()
+        process_count = jax_module.process_count()
         return process_count > 1
     except (ImportError, AttributeError, RuntimeError):
         return False
@@ -57,9 +97,12 @@ def get_process_info() -> Tuple[int, int]:
     if not is_distributed_mode():
         return 0, 1
     
+    jax_module, _ = _ensure_jax_initialized()
+    if jax_module is None:
+        return 0, 1
+        
     try:
-        import jax.distributed
-        return jax.process_index(), jax.process_count()
+        return jax_module.process_index(), jax_module.process_count()
     except (ImportError, AttributeError):
         return 0, 1
 
@@ -216,25 +259,27 @@ def bin_power_spectrum_distributed(k_grid: np.ndarray, power_grid: np.ndarray,
     
     # Reduce across all processes using JAX distributed operations
     if is_distributed_mode() and JAX_AVAILABLE:
-        try:
-            # Convert to JAX arrays for reduction
-            local_power_sums_jax = jnp.array(local_power_sums)
-            local_k_sums_jax = jnp.array(local_k_sums)
-            local_mode_counts_jax = jnp.array(local_mode_counts)
-            
-            # All-reduce to sum across processes
-            global_power_sums = jax.lax.psum(local_power_sums_jax, axis_name=None)
-            global_k_sums = jax.lax.psum(local_k_sums_jax, axis_name=None)
-            global_mode_counts = jax.lax.psum(local_mode_counts_jax, axis_name=None)
-            
-            # Convert back to numpy
-            global_power_sums = np.array(global_power_sums)
-            global_k_sums = np.array(global_k_sums)
-            global_mode_counts = np.array(global_mode_counts, dtype=int)
-            
-        except Exception:
-            # Fallback if distributed operations not available
-            global_power_sums = local_power_sums
+        jax_module, jnp_module = _ensure_jax_initialized()
+        if jax_module is not None and jnp_module is not None:
+            try:
+                # Convert to JAX arrays for reduction
+                local_power_sums_jax = jnp_module.array(local_power_sums)
+                local_k_sums_jax = jnp_module.array(local_k_sums)
+                local_mode_counts_jax = jnp_module.array(local_mode_counts)
+                
+                # All-reduce to sum across processes
+                global_power_sums = jax_module.lax.psum(local_power_sums_jax, axis_name=None)
+                global_k_sums = jax_module.lax.psum(local_k_sums_jax, axis_name=None)
+                global_mode_counts = jax_module.lax.psum(local_mode_counts_jax, axis_name=None)
+                
+                # Convert back to numpy
+                global_power_sums = np.array(global_power_sums)
+                global_k_sums = np.array(global_k_sums)
+                global_mode_counts = np.array(global_mode_counts, dtype=int)
+                
+            except Exception:
+                # Fallback if distributed operations not available
+                global_power_sums = local_power_sums
             global_k_sums = local_k_sums
             global_mode_counts = local_mode_counts
     else:

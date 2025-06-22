@@ -17,15 +17,272 @@ Example usage:
 
 import numpy as np
 from typing import Dict, Union, List
+import os
+from multiprocessing import Pool, cpu_count
+
+
+def _cic_worker(args):
+    """
+    Worker function for multiprocessing CIC assignment.
+    
+    Args:
+        args: Tuple of (particle_chunk, ngrid, box_size)
+        
+    Returns:
+        Density grid from this particle chunk
+    """
+    particle_chunk, ngrid, box_size = args
+    
+    # Handle empty chunk
+    if len(particle_chunk['x']) == 0:
+        return np.zeros((ngrid, ngrid, ngrid), dtype=np.float32)
+    
+    # Extract positions and masses
+    positions = np.column_stack([particle_chunk['x'], particle_chunk['y'], particle_chunk['z']])
+    masses = particle_chunk['mass']
+    
+    # Convert to grid coordinates
+    grid_spacing = box_size / ngrid
+    grid_coords = positions / grid_spacing
+    
+    # Initialize density grid
+    density_grid = np.zeros((ngrid, ngrid, ngrid), dtype=np.float32)
+    
+    # Get integer grid coordinates (lower-left corner of cell)
+    i_coords = np.floor(grid_coords).astype(int)
+    
+    # Get fractional offsets within cells
+    dx = grid_coords - i_coords
+    
+    # Apply periodic boundary conditions
+    i_coords = i_coords % ngrid
+    
+    # Vectorized CIC assignment
+    n_particles = len(masses)
+    
+    # Weight arrays for all particles and all 8 corners
+    weights = np.zeros((n_particles, 8), dtype=np.float32)
+    grid_indices = np.zeros((n_particles, 8, 3), dtype=int)
+    
+    # Calculate weights and indices for all 8 corners simultaneously
+    corner_idx = 0
+    for i in range(2):
+        for j in range(2):
+            for k in range(2):
+                # Weights for this corner (vectorized)
+                weights[:, corner_idx] = (
+                    ((1-i) * (1-dx[:, 0]) + i * dx[:, 0]) *
+                    ((1-j) * (1-dx[:, 1]) + j * dx[:, 1]) *
+                    ((1-k) * (1-dx[:, 2]) + k * dx[:, 2])
+                )
+                
+                # Grid indices with periodic wrapping
+                grid_indices[:, corner_idx, 0] = (i_coords[:, 0] + i) % ngrid
+                grid_indices[:, corner_idx, 1] = (i_coords[:, 1] + j) % ngrid
+                grid_indices[:, corner_idx, 2] = (i_coords[:, 2] + k) % ngrid
+                
+                corner_idx += 1
+    
+    # Vectorized mass assignment using np.add.at
+    for corner in range(8):
+        gi = grid_indices[:, corner, 0]
+        gj = grid_indices[:, corner, 1] 
+        gk = grid_indices[:, corner, 2]
+        weighted_masses = masses * weights[:, corner]
+        
+        # Add weighted mass to grid
+        np.add.at(density_grid, (gi, gj, gk), weighted_masses)
+    
+    return density_grid
+
+
+def _ngp_worker(args):
+    """
+    Worker function for multiprocessing NGP assignment.
+    
+    Args:
+        args: Tuple of (particle_chunk, ngrid, box_size)
+        
+    Returns:
+        Density grid from this particle chunk
+    """
+    particle_chunk, ngrid, box_size = args
+    
+    # Handle empty chunk
+    if len(particle_chunk['x']) == 0:
+        return np.zeros((ngrid, ngrid, ngrid), dtype=np.float32)
+    
+    # Extract positions and masses
+    positions = np.column_stack([particle_chunk['x'], particle_chunk['y'], particle_chunk['z']])
+    masses = particle_chunk['mass']
+    
+    # Convert to grid coordinates
+    grid_spacing = box_size / ngrid
+    grid_coords = positions / grid_spacing
+    
+    # Initialize density grid
+    density_grid = np.zeros((ngrid, ngrid, ngrid), dtype=np.float32)
+    
+    # Round to nearest grid point
+    i_coords = np.round(grid_coords).astype(int)
+    
+    # Apply periodic boundary conditions
+    i_coords = i_coords % ngrid
+    
+    # Add masses to nearest grid points
+    np.add.at(density_grid, (i_coords[:, 0], i_coords[:, 1], i_coords[:, 2]), masses)
+    
+    return density_grid
+
+
+def _cic_slab_worker(args):
+    """
+    Worker function for multiprocessing CIC slab assignment.
+    
+    Args:
+        args: Tuple of (particle_chunk, ngrid, box_size, y_min, y_max, assignment)
+        
+    Returns:
+        Density grid for this particle chunk slab
+    """
+    particle_chunk, ngrid, box_size, y_min, y_max, assignment = args
+    
+    slab_height = y_max - y_min
+    slab_grid = np.zeros((ngrid, slab_height, ngrid), dtype=np.float32)
+    
+    # Handle empty chunk
+    if len(particle_chunk['x']) == 0:
+        return slab_grid
+    
+    # Convert particle positions to grid coordinates
+    grid_spacing = box_size / ngrid
+    x_grid = np.asarray(particle_chunk['x']) / grid_spacing
+    y_grid = np.asarray(particle_chunk['y']) / grid_spacing
+    z_grid = np.asarray(particle_chunk['z']) / grid_spacing
+    masses = np.asarray(particle_chunk['mass'])
+    
+    # Apply periodic boundary conditions
+    x_grid = np.mod(x_grid, ngrid)
+    y_grid = np.mod(y_grid, ngrid)
+    z_grid = np.mod(z_grid, ngrid)
+    
+    # Filter particles that fall within this slab (including ghosts)
+    in_slab = (y_grid >= y_min) & (y_grid < y_max)
+    if not np.any(in_slab):
+        return slab_grid
+    
+    x_slab = x_grid[in_slab]
+    y_slab = y_grid[in_slab] - y_min  # Shift to slab coordinates
+    z_slab = z_grid[in_slab]
+    mass_slab = masses[in_slab]
+    
+    # Perform CIC assignment on slab
+    if assignment == 'cic':
+        _cic_assign_slab_worker(slab_grid, x_slab, y_slab, z_slab, mass_slab)
+    elif assignment == 'ngp':
+        _ngp_assign_slab_worker(slab_grid, x_slab, y_slab, z_slab, mass_slab)
+    
+    return slab_grid
+
+
+def _cic_assign_slab_worker(grid: np.ndarray, x: np.ndarray, y: np.ndarray, 
+                           z: np.ndarray, mass: np.ndarray) -> None:
+    """CIC assignment for slab geometry - worker function."""
+    ngrid_x, slab_height, ngrid_z = grid.shape
+    
+    if len(x) == 0:
+        return
+    
+    # Integer grid coordinates (floor for CIC)
+    ix = np.floor(x).astype(int)
+    iy = np.floor(y).astype(int)
+    iz = np.floor(z).astype(int)
+    
+    # Fractional offsets
+    dx = x - ix
+    dy = y - iy
+    dz = z - iz
+    
+    # Apply periodic boundary conditions for x and z
+    ix = ix % ngrid_x
+    iz = iz % ngrid_z
+    
+    # Check bounds for y (no periodic wrapping in slab direction)
+    valid_mask = (iy >= 0) & (iy < slab_height - 1)
+    if not np.any(valid_mask):
+        return
+    
+    # Filter to valid particles
+    ix_v, iy_v, iz_v = ix[valid_mask], iy[valid_mask], iz[valid_mask]
+    dx_v, dy_v, dz_v = dx[valid_mask], dy[valid_mask], dz[valid_mask]
+    mass_v = mass[valid_mask]
+    
+    # Vectorized CIC for all 8 corners
+    for di in range(2):
+        for dj in range(2):
+            for dk in range(2):
+                # Grid indices for this corner
+                gi = (ix_v + di) % ngrid_x
+                gj = iy_v + dj
+                gk = (iz_v + dk) % ngrid_z
+                
+                # Check bounds for gj (y-direction)
+                valid_y = (gj >= 0) & (gj < slab_height)
+                if not np.any(valid_y):
+                    continue
+                
+                # Filter indices and weights for valid y coordinates
+                gi_f = gi[valid_y]
+                gj_f = gj[valid_y]
+                gk_f = gk[valid_y]
+                
+                # Calculate weights for this corner
+                weights = (
+                    ((1-di) * (1-dx_v[valid_y]) + di * dx_v[valid_y]) *
+                    ((1-dj) * (1-dy_v[valid_y]) + dj * dy_v[valid_y]) *
+                    ((1-dk) * (1-dz_v[valid_y]) + dk * dz_v[valid_y])
+                )
+                
+                weighted_masses = mass_v[valid_y] * weights
+                
+                # Add to grid
+                np.add.at(grid, (gi_f, gj_f, gk_f), weighted_masses)
+
+
+def _ngp_assign_slab_worker(grid: np.ndarray, x: np.ndarray, y: np.ndarray, 
+                           z: np.ndarray, mass: np.ndarray) -> None:
+    """NGP assignment for slab geometry - worker function."""
+    ngrid_x, slab_height, ngrid_z = grid.shape
+    
+    if len(x) == 0:
+        return
+    
+    # Round to nearest grid point
+    ix = np.round(x).astype(int) % ngrid_x
+    iy = np.round(y).astype(int)
+    iz = np.round(z).astype(int) % ngrid_z
+    
+    # Check bounds for y (slab dimension)
+    valid_mask = (iy >= 0) & (iy < slab_height)
+    if not np.any(valid_mask):
+        return
+    
+    # Apply mask to valid particles
+    ix_valid = ix[valid_mask]
+    iy_valid = iy[valid_mask]
+    iz_valid = iz[valid_mask]
+    mass_valid = mass[valid_mask]
+    
+    # Vectorized mass assignment
+    np.add.at(grid, (ix_valid, iy_valid, iz_valid), mass_valid)
 
 
 class ParticleGridder:
     """
-    Handles particle-to-grid mass assignment with various schemes.
+    Efficient particle-to-grid mass assignment with multi-device support.
     
-    Supports Cloud-in-Cell (CIC) and Nearest Grid Point (NGP) assignment
-    with proper periodic boundary condition handling and multi-device
-    domain decomposition for GPU parallelization.
+    Supports Cloud-in-Cell (CIC) and Nearest Grid Point (NGP) assignment schemes
+    with periodic boundary conditions and optimized vectorized operations.
     """
     
     def __init__(self, ngrid: int, box_size: float, assignment: str = 'cic'):
@@ -34,20 +291,77 @@ class ParticleGridder:
         
         Args:
             ngrid: Number of grid cells per dimension
-            box_size: Size of simulation box in Mpc/h
+            box_size: Physical size of simulation box
             assignment: Mass assignment scheme ('cic' or 'ngp')
-            
-        Raises:
-            ValueError: If assignment scheme is not supported
         """
         self.ngrid = ngrid
         self.box_size = box_size
         self.assignment = assignment.lower()
         self.grid_spacing = box_size / ngrid
+        self.volume = box_size**3
         
+        # Auto-detect number of CPU cores for multiprocessing
+        self.n_cpu_cores = int(os.environ.get('SLURM_CPUS_PER_TASK', str(cpu_count())))
+        
+        # Validate assignment scheme
         if self.assignment not in ['cic', 'ngp']:
             raise ValueError(f"Unknown assignment scheme: {assignment}")
+
+    def _get_optimal_n_processes(self, n_particles: int) -> int:
+        """
+        Determine optimal number of processes for particle gridding.
+        
+        Args:
+            n_particles: Number of particles to process
+            
+        Returns:
+            Optimal number of processes to use
+        """
+        # Use all available cores, but don't exceed reasonable limits
+        max_processes = min(self.n_cpu_cores, 32)  # Cap at 32 processes
+        
+        # For small particle counts, don't use too many processes
+        if n_particles < 100000:  # 100K particles
+            return min(max_processes, 4)
+        elif n_particles < 1000000:  # 1M particles  
+            return min(max_processes, 8)
+        else:
+            return max_processes
     
+    def _chunk_particles(self, particles: Dict[str, np.ndarray], n_processes: int) -> List[Dict[str, np.ndarray]]:
+        """
+        Split particles into chunks for multiprocessing.
+        
+        Args:
+            particles: Particle data dictionary
+            n_processes: Number of processes to split across
+            
+        Returns:
+            List of particle chunks
+        """
+        n_particles = len(particles['x'])
+        chunk_size = n_particles // n_processes
+        
+        chunks = []
+        for i in range(n_processes):
+            start_idx = i * chunk_size
+            if i == n_processes - 1:
+                # Last chunk gets any remaining particles
+                end_idx = n_particles
+            else:
+                end_idx = (i + 1) * chunk_size
+            
+            chunk = {
+                'x': particles['x'][start_idx:end_idx],
+                'y': particles['y'][start_idx:end_idx], 
+                'z': particles['z'][start_idx:end_idx],
+                'mass': particles['mass'][start_idx:end_idx]
+            }
+            chunks.append(chunk)
+        
+        return chunks
+
+
     def particles_to_grid(self, particles: Dict[str, np.ndarray], n_devices: int = 1) -> Union[np.ndarray, List[np.ndarray]]:
         """
         Convert particle positions and masses to density grid(s).
@@ -101,10 +415,52 @@ class ParticleGridder:
     
     def _cic_assignment(self, grid_coords: np.ndarray, masses: np.ndarray) -> np.ndarray:
         """
-        Cloud-in-Cell mass assignment using vectorized operations.
+        Cloud-in-Cell mass assignment using vectorized operations with multiprocessing.
         
-        Optimized version that eliminates Python loops for better performance
-        with large particle counts (e.g., 238M particles).
+        Optimized version that uses multiprocessing to parallelize particle processing
+        across available CPU cores for better performance with large particle counts.
+        """
+        n_particles = len(masses)
+        
+        # Determine if multiprocessing is beneficial
+        use_multiprocessing = n_particles > 50000 and self.n_cpu_cores > 1
+        
+        if not use_multiprocessing:
+            # Use single-threaded version for small particle counts
+            return self._cic_assignment_single_thread(grid_coords, masses)
+        
+        # Prepare particles for multiprocessing
+        particles = {
+            'x': grid_coords[:, 0] * self.grid_spacing,  # Convert back to physical coordinates
+            'y': grid_coords[:, 1] * self.grid_spacing,
+            'z': grid_coords[:, 2] * self.grid_spacing,
+            'mass': masses
+        }
+        
+        # Determine optimal number of processes
+        n_processes = self._get_optimal_n_processes(n_particles)
+        
+        print(f"CIC assignment: Using {n_processes} processes for {n_particles:,} particles")
+        
+        # Split particles into chunks
+        particle_chunks = self._chunk_particles(particles, n_processes)
+        
+        # Prepare arguments for worker processes
+        worker_args = [(chunk, self.ngrid, self.box_size) for chunk in particle_chunks]
+        
+        # Process chunks in parallel
+        with Pool(processes=n_processes) as pool:
+            chunk_grids = pool.map(_cic_worker, worker_args)
+        
+        # Sum all chunk grids
+        density_grid = np.sum(chunk_grids, axis=0).astype(np.float32)
+        
+        return density_grid
+    
+    def _cic_assignment_single_thread(self, grid_coords: np.ndarray, masses: np.ndarray) -> np.ndarray:
+        """
+        Single-threaded Cloud-in-Cell mass assignment.
+        Used for small particle counts or when multiprocessing is disabled.
         """
         # Initialize density grid
         density_grid = np.zeros((self.ngrid, self.ngrid, self.ngrid), dtype=np.float32)
@@ -160,7 +516,53 @@ class ParticleGridder:
 
     
     def _ngp_assignment(self, grid_coords: np.ndarray, masses: np.ndarray) -> np.ndarray:
-        """Nearest Grid Point mass assignment."""
+        """
+        Nearest Grid Point mass assignment with multiprocessing support.
+        
+        Uses multiprocessing for large particle counts to improve performance.
+        """
+        n_particles = len(masses)
+        
+        # Determine if multiprocessing is beneficial
+        use_multiprocessing = n_particles > 50000 and self.n_cpu_cores > 1
+        
+        if not use_multiprocessing:
+            # Use single-threaded version for small particle counts
+            return self._ngp_assignment_single_thread(grid_coords, masses)
+        
+        # Prepare particles for multiprocessing
+        particles = {
+            'x': grid_coords[:, 0] * self.grid_spacing,  # Convert back to physical coordinates
+            'y': grid_coords[:, 1] * self.grid_spacing,
+            'z': grid_coords[:, 2] * self.grid_spacing,
+            'mass': masses
+        }
+        
+        # Determine optimal number of processes
+        n_processes = self._get_optimal_n_processes(n_particles)
+        
+        print(f"NGP assignment: Using {n_processes} processes for {n_particles:,} particles")
+        
+        # Split particles into chunks
+        particle_chunks = self._chunk_particles(particles, n_processes)
+        
+        # Prepare arguments for worker processes
+        worker_args = [(chunk, self.ngrid, self.box_size) for chunk in particle_chunks]
+        
+        # Process chunks in parallel
+        with Pool(processes=n_processes) as pool:
+            chunk_grids = pool.map(_ngp_worker, worker_args)
+        
+        # Sum all chunk grids
+        density_grid = np.sum(chunk_grids, axis=0).astype(np.float32)
+        
+        return density_grid
+    
+    def _ngp_assignment_single_thread(self, grid_coords: np.ndarray, masses: np.ndarray) -> np.ndarray:
+        """
+        Single-threaded Nearest Grid Point mass assignment.
+        Used for small particle counts or when multiprocessing is disabled.
+        """
         # Initialize density grid
         density_grid = np.zeros((self.ngrid, self.ngrid, self.ngrid), dtype=np.float32)
         
@@ -300,7 +702,7 @@ class ParticleGridder:
     def particles_to_slab(self, particles: Dict[str, np.ndarray], 
                          y_min: int, y_max: int, ngrid: int) -> np.ndarray:
         """
-        Grid particles to a spatial slab (for distributed processing).
+        Grid particles to a spatial slab (for distributed processing) with multiprocessing.
         
         Args:
             particles: Dictionary with 'x', 'y', 'z', 'mass' arrays
@@ -311,9 +713,43 @@ class ParticleGridder:
         Returns:
             Density grid for the slab with shape (ngrid, slab_height, ngrid)
         """
-        # DEBUG: Print entry to gridding function
-        print(f"DEBUG: Entering particles_to_slab with {len(particles['x'])} particles", flush=True)
+        n_particles = len(particles['x'])
+        print(f"DEBUG: Entering particles_to_slab with {n_particles:,} particles", flush=True)
         
+        slab_height = y_max - y_min
+        
+        # For small particle counts or when multiprocessing isn't beneficial, use single-threaded
+        use_multiprocessing = n_particles > 50000 and self.n_cpu_cores > 1
+        
+        if not use_multiprocessing:
+            return self._particles_to_slab_single_thread(particles, y_min, y_max, ngrid)
+        
+        # Determine optimal number of processes
+        n_processes = self._get_optimal_n_processes(n_particles)
+        
+        print(f"Slab assignment: Using {n_processes} processes for {n_particles:,} particles")
+        
+        # Split particles into chunks
+        particle_chunks = self._chunk_particles(particles, n_processes)
+        
+        # Prepare arguments for worker processes
+        worker_args = [(chunk, ngrid, self.box_size, y_min, y_max, self.assignment) 
+                       for chunk in particle_chunks]
+        
+        # Process chunks in parallel
+        with Pool(processes=n_processes) as pool:
+            chunk_grids = pool.map(_cic_slab_worker, worker_args)
+        
+        # Sum all chunk grids
+        slab_grid = np.sum(chunk_grids, axis=0).astype(np.float32)
+        
+        return slab_grid
+
+    def _particles_to_slab_single_thread(self, particles: Dict[str, np.ndarray], 
+                                        y_min: int, y_max: int, ngrid: int) -> np.ndarray:
+        """
+        Single-threaded slab assignment - used for small particle counts.
+        """
         slab_height = y_max - y_min
         slab_grid = np.zeros((ngrid, slab_height, ngrid), dtype=np.float32)
         
