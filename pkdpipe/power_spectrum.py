@@ -118,58 +118,59 @@ class PowerSpectrumCalculator:
     """
     
     def __init__(self, ngrid: int, box_size: float, n_devices: int = 1,
-                 k_bins: Optional[np.ndarray] = None):
-        """
-        Initialize power spectrum calculator.
-        
-        Args:
-            ngrid: Grid resolution for FFT
-            box_size: Simulation box size in Mpc/h
-            n_devices: Number of GPUs to use (single-process mode)
-            k_bins: Custom k-binning array (default: logarithmic)
+                     k_bins: Optional[np.ndarray] = None):
+            """
+            Initialize power spectrum calculator.
             
-        Raises:
-            ValueError: If parameters are invalid
-        """
-        
-        if ngrid <= 0:
-            raise ValueError("Grid size must be positive")
-        if box_size <= 0:
-            raise ValueError("Box size must be positive")
-        if n_devices < 1:
-            raise ValueError("Number of devices must be at least 1")
+            Args:
+                ngrid: Grid resolution for FFT
+                box_size: Simulation box size in Mpc/h
+                n_devices: Number of GPUs to use (single-process mode)
+                k_bins: Custom k-binning array (default: logarithmic)
+                
+            Raises:
+                ValueError: If parameters are invalid
+            """
             
-        self.ngrid = ngrid
-        self.box_size = box_size  
-        self.n_devices = n_devices
-        self.fundamental_mode = 2 * np.pi / box_size
-        self.volume = box_size**3
-        self.cell_volume = self.volume / ngrid**3
-        
-        # Set up k-binning
-        if k_bins is None:
-            self.k_bins = default_k_bins(ngrid, box_size)
-        else:
-            self.k_bins = k_bins
-        
-        # Show initialization info only from master process
-        from .multi_gpu_utils import is_distributed_mode
-        process_id = int(os.environ.get('SLURM_PROCID', '0'))  # Use SLURM info instead of JAX
-        is_distributed = is_distributed_mode()
-        n_processes = int(os.environ.get('SLURM_NTASKS', '1'))  # Use SLURM info instead of JAX
-        
-        if process_id == 0:
-            print(f"PowerSpectrumCalculator initialized:")
-            print(f"  Grid size: {ngrid}³")
-            print(f"  Box size: {box_size:.1f} Mpc/h")
-            print(f"  Cell size: {box_size/ngrid:.3f} Mpc/h")
-            print(f"  k-bins: {len(self.k_bins)-1}")
-            print(f"  k-range: {self.k_bins[0]:.6f} to {self.k_bins[-1]:.6f} h/Mpc")
-            if is_distributed:
-                print(f"  JAX Distributed Mode: ENABLED ({n_processes} processes)")
-                print(f"  JAX will be initialized after multiprocessing is complete")
+            if ngrid <= 0:
+                raise ValueError("Grid size must be positive")
+            if box_size <= 0:
+                raise ValueError("Box size must be positive")
+            if n_devices < 1:
+                raise ValueError("Number of devices must be at least 1")
+                
+            self.ngrid = ngrid
+            self.box_size = box_size  
+            self.n_devices = n_devices
+            self.fundamental_mode = 2 * np.pi / box_size
+            self.volume = box_size**3
+            self.cell_volume = self.volume / ngrid**3
+            
+            # Set up k-binning
+            if k_bins is None:
+                self.k_bins = default_k_bins(ngrid, box_size)
             else:
-                print(f"  JAX Distributed Mode: DISABLED (using {n_devices} device(s))")
+                self.k_bins = k_bins
+            
+            # Show initialization info only from master process
+            # Use SLURM environment variables instead of JAX to avoid early initialization
+            process_id = int(os.environ.get('SLURM_PROCID', '0'))
+            n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
+            is_distributed = n_processes > 1  # Infer distributed mode from SLURM
+            
+            if process_id == 0:
+                print(f"PowerSpectrumCalculator initialized:")
+                print(f"  Grid size: {ngrid}³")
+                print(f"  Box size: {box_size:.1f} Mpc/h")
+                print(f"  Cell size: {box_size/ngrid:.3f} Mpc/h")
+                print(f"  k-bins: {len(self.k_bins)-1}")
+                print(f"  k-range: {self.k_bins[0]:.6f} to {self.k_bins[-1]:.6f} h/Mpc")
+                if is_distributed:
+                    print(f"  JAX Distributed Mode: ENABLED ({n_processes} processes)")
+                    print(f"  JAX will be initialized after multiprocessing is complete")
+                else:
+                    print(f"  JAX Distributed Mode: DISABLED (using {n_devices} device(s))")
+
     
     def calculate_power_spectrum(self, particles,
                                subtract_shot_noise: bool = False,
@@ -193,9 +194,10 @@ class PowerSpectrumCalculator:
         # Validate input
         self._validate_particles(particles)
         
-        # Check execution mode and calculate power spectrum accordingly
-        distributed_mode = is_distributed_mode()
-        print(f"DEBUG: is_distributed_mode() = {distributed_mode}", flush=True)
+        # Check execution mode using SLURM environment (no JAX needed yet)
+        n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
+        distributed_mode = n_processes > 1
+        print(f"DEBUG: SLURM distributed mode = {distributed_mode} (SLURM_NTASKS={n_processes})", flush=True)
         print(f"DEBUG: self.n_devices = {self.n_devices}", flush=True)
         
         if distributed_mode:
@@ -480,8 +482,9 @@ class PowerSpectrumCalculator:
         """
         print("Using streaming power spectrum calculation for memory efficiency")
         
-        # Initialize density grid based on execution mode
-        if is_distributed_mode():
+        # Initialize density grid based on execution mode (use SLURM check)
+        n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
+        if n_processes > 1:
             return self._calculate_streaming_distributed(data_reader, subtract_shot_noise, assignment)
         else:
             return self._calculate_streaming_single(data_reader, subtract_shot_noise, assignment)
@@ -788,7 +791,8 @@ class PowerSpectrumCalculator:
                 - theoretical_shot_noise_variance: Expected shot noise variance (if available)
             """
             # In distributed mode, provide global mean density that all processes can access
-            if is_distributed_mode() and hasattr(self, '_global_total_particles'):
+            n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
+            if n_processes > 1 and hasattr(self, '_global_total_particles'):
                 # Calculate global mean density from total particles and box volume
                 volume = self.box_size ** 3
                 mean_density = float(self._global_total_particles / volume)

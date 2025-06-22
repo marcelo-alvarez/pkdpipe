@@ -700,50 +700,52 @@ class ParticleGridder:
                     valid_masses)
 
     def particles_to_slab(self, particles: Dict[str, np.ndarray], 
-                         y_min: int, y_max: int, ngrid: int) -> np.ndarray:
-        """
-        Grid particles to a spatial slab (for distributed processing) with multiprocessing.
-        
-        Args:
-            particles: Dictionary with 'x', 'y', 'z', 'mass' arrays
-            y_min: Start index of slab in y-direction (including ghost zones)
-            y_max: End index of slab in y-direction (including ghost zones)
-            ngrid: Full grid resolution
+                             y_min: int, y_max: int, ngrid: int) -> np.ndarray:
+            """
+            Grid particles to a spatial slab (for distributed processing) with multiprocessing.
             
-        Returns:
-            Density grid for the slab with shape (ngrid, slab_height, ngrid)
-        """
-        n_particles = len(particles['x'])
-        print(f"DEBUG: Entering particles_to_slab with {n_particles:,} particles", flush=True)
-        
-        slab_height = y_max - y_min
-        
-        # For small particle counts or when multiprocessing isn't beneficial, use single-threaded
-        use_multiprocessing = n_particles > 50000 and self.n_cpu_cores > 1
-        
-        if not use_multiprocessing:
-            return self._particles_to_slab_single_thread(particles, y_min, y_max, ngrid)
-        
-        # Determine optimal number of processes
-        n_processes = self._get_optimal_n_processes(n_particles)
-        
-        print(f"Slab assignment: Using {n_processes} processes for {n_particles:,} particles")
-        
-        # Split particles into chunks
-        particle_chunks = self._chunk_particles(particles, n_processes)
-        
-        # Prepare arguments for worker processes
-        worker_args = [(chunk, ngrid, self.box_size, y_min, y_max, self.assignment) 
-                       for chunk in particle_chunks]
-        
-        # Process chunks in parallel
-        with Pool(processes=n_processes) as pool:
-            chunk_grids = pool.map(_cic_slab_worker, worker_args)
-        
-        # Sum all chunk grids
-        slab_grid = np.sum(chunk_grids, axis=0).astype(np.float32)
-        
-        return slab_grid
+            Args:
+                particles: Dictionary with 'x', 'y', 'z', 'mass' arrays
+                y_min: Start index of slab in y-direction (including ghost zones)
+                y_max: End index of slab in y-direction (including ghost zones)
+                ngrid: Full grid resolution
+                
+            Returns:
+                Density grid for the slab with shape (ngrid, slab_height, ngrid)
+            """
+            n_particles = len(particles['x'])
+            print(f"DEBUG: Entering particles_to_slab with {n_particles:,} particles", flush=True)
+            
+            slab_height = y_max - y_min
+            
+            # For small particle counts or when multiprocessing isn't beneficial, use single-threaded
+            use_multiprocessing = n_particles > 50000 and self.n_cpu_cores > 1
+            
+            if not use_multiprocessing:
+                return self._particles_to_slab_single_thread(particles, y_min, y_max, ngrid)
+            
+            # Determine optimal number of processes
+            n_processes = self._get_optimal_n_processes(n_particles)
+            
+            print(f"Slab assignment: Using {n_processes} processes for {n_particles:,} particles")
+            
+            # Split particles into chunks
+            particle_chunks = self._chunk_particles(particles, n_processes)
+            
+            # Prepare arguments for worker processes
+            worker_args = [(chunk, ngrid, self.box_size, y_min, y_max, self.assignment) 
+                           for chunk in particle_chunks]
+            
+            # Process chunks in parallel
+            with Pool(processes=n_processes) as pool:
+                chunk_grids = pool.map(_cic_slab_worker, worker_args)
+            
+            # Sum all chunk grids
+            slab_grid = np.sum(chunk_grids, axis=0).astype(np.float32)
+            
+            return slab_grid
+
+
 
     def _particles_to_slab_single_thread(self, particles: Dict[str, np.ndarray], 
                                         y_min: int, y_max: int, ngrid: int) -> np.ndarray:
