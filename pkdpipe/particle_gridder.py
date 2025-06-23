@@ -964,7 +964,7 @@ class ParticleGridder:
                         p.start()
                 
                 # Wait for all processes to complete
-                for p in enumerate(processes):
+                for p in processes:
                     p.join()
                     
                 # Copy result from shared memory to regular array

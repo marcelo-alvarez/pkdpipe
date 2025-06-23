@@ -633,6 +633,12 @@ class Data:
             chunk_data = DataProcessor.cull_tile_reshape_single(cdata, vars, bbox, r1, r2, 
                                                               format_info, lightcone)
             if chunk_data.size > 0:
+                # MEMORY OPTIMIZATION: Extract only position fields (x,y,z) from chunk_data
+                # This reduces memory usage from 6 fields to 3 fields per chunk
+                if len(vars) == 6 and vars[:3] == ['x', 'y', 'z'] and vars[3:6] == ['vx', 'vy', 'vz']:
+                    # Extract only first 3 rows (x,y,z) and discard velocity fields
+                    chunk_data = chunk_data[:3, :]  # Keep only x,y,z rows
+                
                 data_chunks.append(chunk_data)
             
             # Continue processing all chunks
@@ -969,7 +975,23 @@ class Data:
             else:
                 raise ValueError(f"Unsupported filetype for snapshots: {filetype}")
             
-            data[f"box{i}"] = np.rec.fromarrays(array.reshape(len(vars), -1), names=vars)
+            # BUGFIX: Account for memory optimization that may strip velocity fields
+            # The array may have fewer fields than originally requested
+            actual_nfields = array.shape[0] if array.size > 0 else len(vars)
+            
+            if array.size > 0 and array.size % actual_nfields != 0:
+                # This should never happen with our corrected logic
+                raise ValueError(f"Array size {array.size} not divisible by {actual_nfields} fields")
+            
+            # Use only the variables that match the actual array structure
+            if actual_nfields == 3 and len(vars) == 6:
+                # Memory optimization stripped velocity fields, use only position vars
+                actual_vars = vars[:3]  # ['x', 'y', 'z']
+                _log_info(f"Memory optimization detected: using {actual_vars} (velocities stripped)")
+            else:
+                actual_vars = vars
+            
+            data[f"box{i}"] = np.rec.fromarrays(array.reshape(actual_nfields, -1), names=actual_vars)
         
         self.zout = np.array(zout)
         self.nout = len(data)

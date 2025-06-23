@@ -202,19 +202,52 @@ def calculate_power_spectrum(particles_or_data, box_size, ngrid=512, assignment=
         # Convert first box to particle dictionary format
         particles_rec = list(particles_or_data.values())[0]
         
-        # Handle mass field - tps format has mass, xvp dataset might not need it for power spectrum
+        # MEMORY OPTIMIZATION: Extract only position fields (no mass, no velocity)
+        # MEMORY DEBUG: Check if each process loads full dataset vs distributed loading
+        import psutil
+        import os
+        process = psutil.Process()
+        memory_before_extraction = process.memory_info().rss / 1024**3
+        
+        n_particles_loaded = len(particles_rec)
+        expected_memory_gb = n_particles_loaded * 6 * 4 / 1024**3  # 6 fields × 4 bytes (original TPS)
+        process_id = int(os.environ.get('SLURM_PROCID', '0'))
+        
+        print(f"DEBUG: PROCESS {process_id}: particles_rec type: {type(particles_rec)}")
+        print(f"DEBUG: PROCESS {process_id}: particles_rec dtype: {particles_rec.dtype}")
+        print(f"DEBUG: PROCESS {process_id}: particles_rec shape: {particles_rec.shape}")
+        print(f"DEBUG: PROCESS {process_id}: loaded {n_particles_loaded:,} particles")
+        print(f"DEBUG: PROCESS {process_id}: expected memory: {expected_memory_gb:.2f} GB")
+        print(f"DEBUG: PROCESS {process_id}: actual memory before extraction: {memory_before_extraction:.2f} GB")
         
         try:
-            if 'mass' in particles_rec.dtype.names:
-                        mass_data = particles_rec['mass']
-                    else:
-                # Default to unit mass for datasets without explicit mass
-                        mass_data = np.ones(len(particles_rec['x']))
+            # MEMORY OPTIMIZATION: Extract fields one at a time and immediately free memory
+            print(f"DEBUG: Converting x field...")
+            x_data = np.array(particles_rec['x'], dtype=np.float32)
+            print(f"DEBUG: Converting y field...")
+            y_data = np.array(particles_rec['y'], dtype=np.float32)
+            print(f"DEBUG: Converting z field...")
+            z_data = np.array(particles_rec['z'], dtype=np.float32)
             
-                x_data = np.array(particles_rec['x'])
-                y_data = np.array(particles_rec['y'])
-                z_data = np.array(particles_rec['z'])
-                mass_array = np.array(mass_data)
+            # MEMORY OPTIMIZATION: Immediately delete the original record array (contains velocity+mass fields)
+            # This should reduce memory from 36 bytes/particle to 12 bytes/particle
+            print(f"DEBUG: Freeing original particles_rec array (contains velocity+mass fields)")
+            del particles_rec
+            import gc
+            gc.collect()  # Force garbage collection to free memory immediately
+            
+            # Check memory after cleanup - should be ~12 bytes/particle (3 fields × 4 bytes)
+            memory_after_cleanup = process.memory_info().rss / 1024**3
+            n_particles_final = len(x_data)
+            expected_final_memory_gb = n_particles_final * 3 * 4 / 1024**3  # 3 fields × 4 bytes
+            print(f"DEBUG: PROCESS {process_id}: memory after cleanup: {memory_after_cleanup:.2f} GB")
+            print(f"DEBUG: PROCESS {process_id}: expected final memory: {expected_final_memory_gb:.2f} GB")
+            print(f"DEBUG: PROCESS {process_id}: memory reduction: {memory_before_extraction - memory_after_cleanup:.2f} GB")
+            
+            # Create unit mass array only if needed by power spectrum algorithm
+            n_particles = len(x_data)
+            print(f"DEBUG: Creating minimal unit mass array for {n_particles:,} particles")
+            mass_array = np.ones(n_particles, dtype=np.float32)
             
             data_input = {
                 'x': x_data,
@@ -223,7 +256,9 @@ def calculate_power_spectrum(particles_or_data, box_size, ngrid=512, assignment=
                 'mass': mass_array
             }
             print(f"Converting snapshot data: {len(data_input['x']):,} particles")
-                except Exception as e:
+            print(f"DEBUG: data_input keys: {list(data_input.keys())}")
+            print(f"DEBUG: data_input['x'] type: {type(data_input['x'])}")
+        except Exception as e:
             print(f"ERROR in particle conversion: {e}")
             import traceback
             traceback.print_exc()
