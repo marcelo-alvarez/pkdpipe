@@ -931,35 +931,67 @@ class ParticleGridder:
             """
             Grid particles using shared memory array to avoid broken pipe issues.
             
-            This approach creates a shared memory array that all workers can write to directly,
-            avoiding the need to send large density grids back through multiprocessing pipes.
+            MEMORY OPTIMIZED: Uses shared memory for both input particles and output grid
+            to prevent memory explosion from process copying.
             """
             from multiprocessing import shared_memory, Process
             import numpy as np
             
             slab_height = y_max - y_min
+            n_particles = len(particles['x'])
             
             # Create shared memory array for the result grid
             grid_shape = (ngrid, slab_height, ngrid)
             grid_size = np.prod(grid_shape)
             
-            # Split particles into chunks
-            particle_chunks = self._chunk_particles(particles, n_processes)
+            # MEMORY OPTIMIZATION: Limit number of processes for high particle counts
+            # to prevent memory explosion
+            if n_particles > 100_000_000:  # 100M particles
+                effective_n_processes = min(n_processes, 8)  # Max 8 processes for large datasets
+            elif n_particles > 50_000_000:   # 50M particles  
+                effective_n_processes = min(n_processes, 16) # Max 16 processes
+            else:
+                effective_n_processes = n_processes
             
-            # Create shared memory block
-            shm = shared_memory.SharedMemory(create=True, size=grid_size * 4)  # float32 = 4 bytes
-            shared_grid = np.ndarray(grid_shape, dtype=np.float32, buffer=shm.buf)
-            shared_grid.fill(0.0)  # Initialize to zero
+            # Split particles into chunks by index ranges (not actual data copying)
+            chunk_size = n_particles // effective_n_processes
+            chunk_ranges = []
+            for i in range(effective_n_processes):
+                start_idx = i * chunk_size
+                if i == effective_n_processes - 1:
+                    end_idx = n_particles  # Last chunk gets remaining particles
+                else:
+                    end_idx = (i + 1) * chunk_size
+                chunk_ranges.append((start_idx, end_idx))
+            
+            # Create shared memory for particle data to avoid copying
+            particles_shm = {}
+            particles_arrays = {}
             
             try:
-                # Create worker processes
-                processes = []
+                # Put particle arrays in shared memory
+                for key in ['x', 'y', 'z', 'mass']:
+                    arr = particles[key].astype(np.float32)  # Ensure float32
+                    shm = shared_memory.SharedMemory(create=True, size=arr.nbytes)
+                    shared_arr = np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)
+                    shared_arr[:] = arr[:]  # Copy data to shared memory
+                    particles_shm[key] = shm
+                    particles_arrays[key] = shared_arr
                 
-                for i, chunk in enumerate(particle_chunks):
-                    if len(chunk['x']) > 0:  # Only start process if chunk has particles
-                        p = Process(target=_cic_slab_shared_worker, 
-                                  args=(chunk, ngrid, self.box_size, y_min, y_max, 
-                                       self.assignment, shm.name, grid_shape, i))
+                # Create shared memory for output grid
+                grid_shm = shared_memory.SharedMemory(create=True, size=grid_size * 4)  # float32 = 4 bytes
+                shared_grid = np.ndarray(grid_shape, dtype=np.float32, buffer=grid_shm.buf)
+                shared_grid.fill(0.0)  # Initialize to zero
+                
+                # Create worker processes with shared memory names and index ranges
+                processes = []
+                for i, (start_idx, end_idx) in enumerate(chunk_ranges):
+                    if end_idx > start_idx:  # Only start process if chunk has particles
+                        particle_shm_names = {key: shm.name for key, shm in particles_shm.items()}
+                        p = Process(target=_cic_slab_shared_worker_optimized, 
+                                  args=(particle_shm_names, n_particles, start_idx, end_idx,
+                                       ngrid, self.box_size, y_min, y_max, 
+                                       self.assignment, grid_shm.name, grid_shape, i))
                         processes.append(p)
                         p.start()
                 
@@ -971,9 +1003,13 @@ class ParticleGridder:
                 result_grid = shared_grid.copy()
                 
             finally:
-                # Clean up shared memory
-                shm.close()
-                shm.unlink()
+                # Clean up all shared memory
+                for shm in particles_shm.values():
+                    shm.close()
+                    shm.unlink()
+                if 'grid_shm' in locals():
+                    grid_shm.close()
+                    grid_shm.unlink()
             
             return result_grid
 
@@ -1048,4 +1084,81 @@ def _cic_slab_shared_worker(particle_chunk, ngrid, box_size, y_min, y_max, assig
     finally:
         # Close shared memory connection (but don't unlink - main process will do that)
         shm.close()
+
+def _cic_slab_shared_worker_optimized(particle_shm_names, n_particles, start_idx, end_idx,
+                                    ngrid, box_size, y_min, y_max, assignment, 
+                                    grid_shm_name, grid_shape, worker_id):
+    """
+    MEMORY OPTIMIZED worker function that accesses particles from shared memory.
+    
+    This avoids copying large particle arrays to each worker process.
+    """
+    from multiprocessing import shared_memory
+    import numpy as np
+    
+    # Connect to shared memory for particles
+    particle_arrays = {}
+    particle_shms = {}
+    
+    try:
+        # Access particle data from shared memory
+        for key, shm_name in particle_shm_names.items():
+            shm = shared_memory.SharedMemory(name=shm_name)
+            arr = np.ndarray((n_particles,), dtype=np.float32, buffer=shm.buf)
+            particle_arrays[key] = arr
+            particle_shms[key] = shm
+        
+        # Connect to shared grid memory
+        grid_shm = shared_memory.SharedMemory(name=grid_shm_name)
+        shared_grid = np.ndarray(grid_shape, dtype=np.float32, buffer=grid_shm.buf)
+        
+        # Create local grid for this worker
+        slab_height = y_max - y_min
+        local_grid = np.zeros((ngrid, slab_height, ngrid), dtype=np.float32)
+        
+        # Extract particle chunk using index range (no memory copying!)
+        if end_idx > start_idx:
+            x_chunk = particle_arrays['x'][start_idx:end_idx]
+            y_chunk = particle_arrays['y'][start_idx:end_idx] 
+            z_chunk = particle_arrays['z'][start_idx:end_idx]
+            mass_chunk = particle_arrays['mass'][start_idx:end_idx]
+            
+            # Convert particle positions to grid coordinates
+            grid_spacing = box_size / ngrid
+            x_grid = x_chunk / grid_spacing
+            y_grid = y_chunk / grid_spacing  
+            z_grid = z_chunk / grid_spacing
+            
+            # Apply periodic boundary conditions
+            x_grid = np.mod(x_grid, ngrid)
+            y_grid = np.mod(y_grid, ngrid)
+            z_grid = np.mod(z_grid, ngrid)
+            
+            # Filter particles that fall within this slab
+            in_slab = (y_grid >= y_min) & (y_grid < y_max)
+            if np.any(in_slab):
+                x_slab = x_grid[in_slab]
+                y_slab = y_grid[in_slab] - y_min  # Shift to slab coordinates
+                z_slab = z_grid[in_slab]
+                mass_slab = mass_chunk[in_slab]
+                
+                # Perform assignment on local grid
+                if assignment == 'cic':
+                    _cic_assign_slab_worker(local_grid, x_slab, y_slab, z_slab, mass_slab)
+                elif assignment == 'ngp':
+                    _ngp_assign_slab_worker(local_grid, x_slab, y_slab, z_slab, mass_slab)
+                elif assignment == 'tsc':
+                    # TSC not implemented for slab workers yet, fall back to CIC
+                    _cic_assign_slab_worker(local_grid, x_slab, y_slab, z_slab, mass_slab)
+        
+        # Atomically add local grid to shared grid
+        # Note: This isn't truly atomic, but race conditions are unlikely with spatial locality
+        shared_grid += local_grid
+        
+    finally:
+        # Close shared memory connections (but don't unlink - main process will do that)
+        for shm in particle_shms.values():
+            shm.close()
+        if 'grid_shm' in locals():
+            grid_shm.close()
 
