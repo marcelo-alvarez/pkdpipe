@@ -927,12 +927,25 @@ def redistribute_particles_mpi(particles, assignment_scheme, ngrid, box_size):
     Returns:
         Tuple of (redistributed_particles, y_min, y_max, base_y_min, base_y_max)
     """
+    import psutil
+    import os
+    
+    def get_memory_usage():
+        """Get current memory usage in GB"""
+        process = psutil.Process()
+        return process.memory_info().rss / 1024**3
+    
     try:
         from mpi4py import MPI
         comm = MPI.COMM_WORLD
         rank = comm.Get_rank()
         size = comm.Get_size()
-        print(f"DEBUG: MPI rank {rank}/{size}: Starting particle redistribution", flush=True)
+        
+        initial_memory = get_memory_usage()
+        n_particles = len(particles['x'])
+        particle_data_gb = n_particles * 24 / 1024**3
+        print(f"🔍 MPI RANK {rank}: REDISTRIBUTION START - {n_particles:,} particles ({particle_data_gb:.2f} GB), memory: {initial_memory:.2f} GB", flush=True)
+        
     except ImportError:
         print("DEBUG: MPI4py not available, falling back to single process", flush=True)
         # Single process fallback
@@ -968,9 +981,15 @@ def redistribute_particles_mpi(particles, assignment_scheme, ngrid, box_size):
     # CRITICAL FIX: Scale particle coordinates from [0,1] to [0,box_size]
     # PKDGrav3 TPS files store coordinates as fractions of box size
     print(f"DEBUG: MPI rank {rank}: Scaling particle coordinates from [0,1] to [0,{box_size:.1f}]", flush=True)
-    particles['x'] = particles['x'] * box_size
-    particles['y'] = particles['y'] * box_size  
-    particles['z'] = particles['z'] * box_size
+    memory_before_scaling = get_memory_usage()
+    
+    particles['x'] *= box_size
+    particles['y'] *= box_size  
+    particles['z'] *= box_size
+    
+    memory_after_scaling = get_memory_usage()
+    scaling_overhead = memory_after_scaling - memory_before_scaling
+    print(f"🔍 MPI RANK {rank}: After coordinate scaling: {memory_after_scaling:.2f} GB (+{scaling_overhead:.2f} GB)", flush=True)
     
     # Verify scaling worked
     y_scaled_min = float(np.min(particles['y']))
@@ -987,15 +1006,23 @@ def redistribute_particles_mpi(particles, assignment_scheme, ngrid, box_size):
         )
         all_domains.append((proc_y_min, proc_y_max))
     
-    cell_size = box_size / ngrid
+    # MEMORY OPTIMIZATION: Use float32 cell_size and convert y coordinates in-place
+    cell_size = np.float32(box_size / ngrid)
     
     # Step 1: Determine destination process for each local particle
-    y_grid = particles['y'] / cell_size
+    memory_before_grid_calc = get_memory_usage()
+    
+    # MEMORY OPTIMIZATION: Convert y coordinates to grid units in-place (no new array)
+    particles['y'] /= cell_size  # Now particles['y'] contains grid coordinates
     n_local = len(particles['x'])
     
+    memory_after_grid_calc = get_memory_usage()
+    grid_calc_overhead = memory_after_grid_calc - memory_before_grid_calc
+    print(f"🔍 MPI RANK {rank}: After in-place y grid conversion: {memory_after_grid_calc:.2f} GB (+{grid_calc_overhead:.2f} GB)", flush=True)
+    
     # DEBUG: Check grid coordinate conversion
-    y_grid_min = float(np.min(y_grid))
-    y_grid_max = float(np.max(y_grid))
+    y_grid_min = float(np.min(particles['y']))
+    y_grid_max = float(np.max(particles['y']))
     print(f"DEBUG: MPI rank {rank}: cell_size = {cell_size:.6f}", flush=True)
     print(f"DEBUG: MPI rank {rank}: y_grid range: [{y_grid_min:.3f}, {y_grid_max:.3f}] (should be 0 to {ngrid})", flush=True)
     
@@ -1005,10 +1032,18 @@ def redistribute_particles_mpi(particles, assignment_scheme, ngrid, box_size):
         print(f"  Process {i}: y=[{proc_y_min:.1f}, {proc_y_max:.1f}]", flush=True)
     
     # Assign particles to destination processes
+    memory_before_dest_calc = get_memory_usage()
     dest_processes = np.zeros(n_local, dtype=np.int32)
     for i, (proc_y_min, proc_y_max) in enumerate(all_domains):
-        in_proc_domain = (y_grid >= proc_y_min) & (y_grid < proc_y_max)
+        in_proc_domain = (particles['y'] >= proc_y_min) & (particles['y'] < proc_y_max)
         dest_processes = np.where(in_proc_domain, i, dest_processes)
+    
+    memory_after_dest_calc = get_memory_usage()
+    dest_calc_overhead = memory_after_dest_calc - memory_before_dest_calc
+    print(f"🔍 MPI RANK {rank}: After destination calculation: {memory_after_dest_calc:.2f} GB (+{dest_calc_overhead:.2f} GB)", flush=True)
+    
+    # Convert y coordinates back to physical units before particle exchange
+    particles['y'] *= cell_size
     
     # Step 2: Count particles going to each process
     send_counts = np.zeros(size, dtype=np.int32)
@@ -1025,6 +1060,7 @@ def redistribute_particles_mpi(particles, assignment_scheme, ngrid, box_size):
     print(f"DEBUG: MPI rank {rank}: will receive {recv_counts} particles from each process (total: {total_recv})", flush=True)
     
     # Step 4: Pack particles by destination process
+    memory_before_packing = get_memory_usage()
     particles_by_dest = {}
     for dest_proc in range(size):
         going_to_dest = (dest_processes == dest_proc)
@@ -1033,15 +1069,25 @@ def redistribute_particles_mpi(particles, assignment_scheme, ngrid, box_size):
             dest_particles[key] = np.array(particles[key][going_to_dest])
         particles_by_dest[dest_proc] = dest_particles
     
+    memory_after_packing = get_memory_usage()
+    packing_overhead = memory_after_packing - memory_before_packing
+    print(f"🔍 MPI RANK {rank}: After particle packing: {memory_after_packing:.2f} GB (+{packing_overhead:.2f} GB)", flush=True)
+    
     # Save dtypes before freeing the original particles array
     particle_dtypes = {key: particles[key].dtype for key in ['x', 'y', 'z', 'mass']}
     
     # Memory cleanup: Free original particles array (saves ~1.5GB per process)
-    print(f"DEBUG: MPI rank {rank}: freeing original particles array", flush=True)
+    memory_before_cleanup = get_memory_usage()
+    print(f"🔍 MPI RANK {rank}: freeing original particles array", flush=True)
     del particles
     del dest_processes  # Also free the destination assignment array
     
+    memory_after_cleanup = get_memory_usage()
+    cleanup_savings = memory_before_cleanup - memory_after_cleanup
+    print(f"🔍 MPI RANK {rank}: After particle cleanup: {memory_after_cleanup:.2f} GB (-{cleanup_savings:.2f} GB)", flush=True)
+    
     # Step 5: Deadlock-free MPI exchange using separate send/recv phases
+    memory_before_redistribution = get_memory_usage()
     redistributed_particles = {'x': [], 'y': [], 'z': [], 'mass': []}
     
     # Phase 1: Keep my own particles first
@@ -1050,7 +1096,7 @@ def redistribute_particles_mpi(particles, assignment_scheme, ngrid, box_size):
         if len(my_particles[key]) > 0:
             redistributed_particles[key].append(my_particles[key])
     
-    print(f"DEBUG: MPI rank {rank}: kept {len(my_particles['x'])} own particles", flush=True)
+    print(f"🔍 MPI RANK {rank}: kept {len(my_particles['x'])} own particles", flush=True)
     
     # Phase 2: Non-blocking chunked sends to all other processes
     send_requests = []
@@ -1060,10 +1106,14 @@ def redistribute_particles_mpi(particles, assignment_scheme, ngrid, box_size):
             send_count = len(send_particles['x'])
             
             if send_count > 0:
-                print(f"DEBUG: MPI rank {rank}: sending {send_count} particles to rank {dest_proc}", flush=True)
+                print(f"🔍 MPI RANK {rank}: sending {send_count} particles to rank {dest_proc}", flush=True)
                 # Use chunked send to avoid large message problems
                 chunk_requests = chunked_mpi_isend(send_particles, dest_proc, comm, chunk_size_mb=512)
                 send_requests.extend(chunk_requests)
+    
+    memory_after_sends = get_memory_usage()
+    send_overhead = memory_after_sends - memory_before_redistribution
+    print(f"🔍 MPI RANK {rank}: After initiating sends: {memory_after_sends:.2f} GB (+{send_overhead:.2f} GB)", flush=True)
     
     # Phase 3: Blocking chunked receives from all other processes  
     for src_proc in range(size):
@@ -1071,42 +1121,67 @@ def redistribute_particles_mpi(particles, assignment_scheme, ngrid, box_size):
             recv_count = recv_counts[src_proc]
             
             if recv_count > 0:
-                print(f"DEBUG: MPI rank {rank}: receiving {recv_count} particles from rank {src_proc}", flush=True)
+                memory_before_recv = get_memory_usage()
+                print(f"🔍 MPI RANK {rank}: receiving {recv_count} particles from rank {src_proc}", flush=True)
                 # Use chunked receive to handle large messages
                 recv_particles = chunked_mpi_recv(src_proc, comm)
+                
+                memory_after_recv = get_memory_usage()
+                recv_overhead = memory_after_recv - memory_before_recv
+                print(f"🔍 MPI RANK {rank}: After receiving from rank {src_proc}: {memory_after_recv:.2f} GB (+{recv_overhead:.2f} GB)", flush=True)
                 
                 # Add received particles
                 for key in ['x', 'y', 'z', 'mass']:
                     if len(recv_particles[key]) > 0:
                         redistributed_particles[key].append(recv_particles[key])
+                        
+                current_memory = get_memory_usage()
+                print(f"🔍 MPI RANK {rank}: After appending particles from rank {src_proc}: {current_memory:.2f} GB", flush=True)
     
     # Phase 4: Wait for all sends to complete
-    print(f"DEBUG: MPI rank {rank}: waiting for {len(send_requests)} send operations to complete", flush=True)
+    print(f"🔍 MPI RANK {rank}: waiting for {len(send_requests)} send operations to complete", flush=True)
     for req in send_requests:
         req.wait()
     
     # Memory cleanup: Free particles_by_dest array after MPI exchange (saves additional memory)
-    print(f"DEBUG: MPI rank {rank}: freeing particles_by_dest array", flush=True)
+    memory_before_dest_cleanup = get_memory_usage()
+    print(f"🔍 MPI RANK {rank}: freeing particles_by_dest array", flush=True)
     del particles_by_dest
     
+    memory_after_dest_cleanup = get_memory_usage()
+    dest_cleanup_savings = memory_before_dest_cleanup - memory_after_dest_cleanup
+    print(f"🔍 MPI RANK {rank}: After particles_by_dest cleanup: {memory_after_dest_cleanup:.2f} GB (-{dest_cleanup_savings:.2f} GB)", flush=True)
+    
     # Phase 5: Concatenate all received particles
+    memory_before_concat = get_memory_usage()
+    print(f"🔍 MPI RANK {rank}: Starting final concatenation...", flush=True)
+    
     final_particles = {}
     for key in ['x', 'y', 'z', 'mass']:
         if redistributed_particles[key]:
+            print(f"🔍 MPI RANK {rank}: Concatenating {len(redistributed_particles[key])} arrays for key '{key}'", flush=True)
             final_particles[key] = np.concatenate(redistributed_particles[key])
         else:
             final_particles[key] = np.array([], dtype=particle_dtypes[key])
     
+    memory_after_concat = get_memory_usage()
+    concat_overhead = memory_after_concat - memory_before_concat
+    print(f"🔍 MPI RANK {rank}: After concatenation: {memory_after_concat:.2f} GB (+{concat_overhead:.2f} GB)", flush=True)
+    
     redistributed_particles = final_particles
     
-    print(f"DEBUG: MPI rank {rank}: redistribution complete, received {total_recv} particles", flush=True)
+    total_memory_increase = memory_after_concat - initial_memory
+    print(f"🔍 MPI RANK {rank}: REDISTRIBUTION COMPLETE - {total_recv} particles, memory: {memory_after_concat:.2f} GB (+{total_memory_increase:.2f} GB total)", flush=True)
     
     # Step 6: Verify particles are in correct spatial domain (optional debug check)
     if total_recv > 0:
-        final_y_grid = redistributed_particles['y'] / cell_size
-        in_domain_check = (final_y_grid >= my_y_min) & (final_y_grid < my_y_max)
+        # MEMORY OPTIMIZATION: Convert to grid coordinates in-place for verification
+        redistributed_particles['y'] /= cell_size
+        in_domain_check = (redistributed_particles['y'] >= my_y_min) & (redistributed_particles['y'] < my_y_max)
         final_in_domain = int(np.sum(in_domain_check))
         print(f"DEBUG: MPI rank {rank}: {final_in_domain}/{total_recv} particles verified in correct domain", flush=True)
+        # Convert back to physical coordinates
+        redistributed_particles['y'] *= cell_size
     
     # MPI Barrier: Ensure all processes complete redistribution before proceeding
     print(f"DEBUG: MPI rank {rank}: entering MPI barrier after redistribution", flush=True)
@@ -1114,6 +1189,8 @@ def redistribute_particles_mpi(particles, assignment_scheme, ngrid, box_size):
     print(f"DEBUG: MPI rank {rank}: exiting MPI barrier after redistribution", flush=True)
     
     return redistributed_particles, my_y_min, my_y_max, base_y_min, base_y_max
+
+
 
 
 def redistribute_particles_sequential_read(data_reader, assignment_scheme, ngrid, box_size):
@@ -1156,7 +1233,8 @@ def redistribute_particles_sequential_read(data_reader, assignment_scheme, ngrid
     
     print(f"DEBUG: Process {process_id}: all spatial domains = {all_domains}", flush=True)
     
-    cell_size = box_size / ngrid
+    # MEMORY OPTIMIZATION: Use float32 cell_size to avoid type promotion
+    cell_size = np.float32(box_size / ngrid)
     
     # Import modules needed by all processes
     import tempfile
@@ -1179,12 +1257,12 @@ def redistribute_particles_sequential_read(data_reader, assignment_scheme, ngrid
         temp_dir = "/tmp/sequential_particle_exchange"
         os.makedirs(temp_dir, exist_ok=True)
         
-        # Spatial filtering and distribution
-        y_grid = particles['y'] / cell_size
+        # MEMORY OPTIMIZATION: Convert y coordinates to grid units in-place
+        particles['y'] /= cell_size  # Now particles['y'] contains grid coordinates
         
         for dest_proc in range(n_processes):
             proc_y_min, proc_y_max = all_domains[dest_proc]
-            in_proc_domain = (y_grid >= proc_y_min) & (y_grid < proc_y_max)
+            in_proc_domain = (particles['y'] >= proc_y_min) & (particles['y'] < proc_y_max)
             
             proc_particles = {}
             for key in ['x', 'y', 'z', 'mass']:
@@ -1274,7 +1352,8 @@ def redistribute_particles_spatial(particles, assignment_scheme, ngrid, box_size
     print(f"DEBUG: Process {process_id}: spatial domain y=[{my_y_min:.1f}, {my_y_max:.1f}]", flush=True)
     
     if JAX_AVAILABLE and n_processes > 1:
-        cell_size = box_size / ngrid
+        # MEMORY OPTIMIZATION: Use float32 cell_size to avoid type promotion
+        cell_size = np.float32(box_size / ngrid)
         
         # Step 1: Calculate all spatial domains (for all processes)
         all_domains = []
@@ -1287,21 +1366,19 @@ def redistribute_particles_spatial(particles, assignment_scheme, ngrid, box_size
         print(f"DEBUG: Process {process_id}: all domains = {all_domains}", flush=True)
         
         # Step 2: Determine destination process for each local particle
-        y_grid = particles['y'] / cell_size
+        # MEMORY OPTIMIZATION: Convert y coordinates to grid units in-place
+        particles['y'] /= cell_size  # Now particles['y'] contains grid coordinates
         n_local = len(particles['x'])
         
-        # DEBUG: Check spatial distribution of local particles
-        y_min_local = float(np.min(particles['y']))
-        y_max_local = float(np.max(particles['y']))
-        y_grid_min = float(np.min(y_grid))
-        y_grid_max = float(np.max(y_grid))
-        print(f"DEBUG: Process {process_id}: Local particle y-range = [{y_min_local:.1f}, {y_max_local:.1f}] Mpc/h", flush=True)
-        print(f"DEBUG: Process {process_id}: Local particle y-grid range = [{y_grid_min:.1f}, {y_grid_max:.1f}] cells", flush=True)
+        # DEBUG: Check spatial distribution of local particles (now in grid coordinates)
+        y_grid_min = float(np.min(particles['y']))
+        y_grid_max = float(np.max(particles['y']))
+        print(f"DEBUG: Process {process_id}: Local particle y-grid range = [{y_grid_min:.1f}, {y_grid_max:.1f}] grid units", flush=True)
         
         # Assign each particle to a destination process based on y-coordinate
         dest_processes = np.zeros(n_local, dtype=np.int32)
         for i, (proc_y_min, proc_y_max) in enumerate(all_domains):
-            in_proc_domain = (y_grid >= proc_y_min) & (y_grid < proc_y_max)
+            in_proc_domain = (particles['y'] >= proc_y_min) & (particles['y'] < proc_y_max)
             dest_processes = np.where(in_proc_domain, i, dest_processes)
             n_in_domain = int(np.sum(in_proc_domain))
             print(f"DEBUG: Process {process_id}: {n_in_domain} particles belong to process {i} domain [{proc_y_min}, {proc_y_max}]", flush=True)
@@ -1411,20 +1488,22 @@ def redistribute_particles_spatial(particles, assignment_scheme, ngrid, box_size
             domain_particles = len(redistributed_particles['x'])
             print(f"DEBUG: Process {process_id}: Combined {domain_particles} particles from file exchange", flush=True)
             
-            # Verify particles are in correct spatial domain
+            # Verify particles are in correct spatial domain (convert to grid coordinates in-place)
             if domain_particles > 0:
-                final_y_grid = redistributed_particles['y'] / cell_size
-                in_domain_check = (final_y_grid >= my_y_min) & (final_y_grid < my_y_max)
+                redistributed_particles['y'] /= cell_size
+                in_domain_check = (redistributed_particles['y'] >= my_y_min) & (redistributed_particles['y'] < my_y_max)
                 final_in_domain = int(np.sum(in_domain_check))
                 print(f"DEBUG: Process {process_id}: {final_in_domain}/{domain_particles} particles verified in correct domain", flush=True)
+                # Convert back to physical coordinates
+                redistributed_particles['y'] *= cell_size
             
         except Exception as e:
             print(f"DEBUG: Process {process_id}: File-based particle exchange failed: {e}", flush=True)
             print(f"DEBUG: Process {process_id}: Falling back to local filtering", flush=True)
             
             # Fallback: Use only local particles (not ideal but better than crashing)
-            local_y_grid = particles['y'] / cell_size
-            in_my_domain = (local_y_grid >= my_y_min) & (local_y_grid < my_y_max)
+            # Note: particles['y'] is already in grid coordinates at this point
+            in_my_domain = (particles['y'] >= my_y_min) & (particles['y'] < my_y_max)
             
             redistributed_particles = {}
             for key in ['x', 'y', 'z', 'mass']:
@@ -1511,8 +1590,16 @@ def chunked_mpi_recv(src_proc, comm):
         Dictionary with 'x', 'y', 'z', 'mass' arrays
     """
     import numpy as np
+    import psutil
+    
+    def get_memory_usage():
+        """Get current memory usage in GB"""
+        process = psutil.Process()
+        return process.memory_info().rss / 1024**3
     
     my_rank = comm.Get_rank()
+    
+    memory_before_recv = get_memory_usage()
     
     # Receive metadata first
     tag_metadata = my_rank * 1000
@@ -1520,28 +1607,72 @@ def chunked_mpi_recv(src_proc, comm):
     n_particles = metadata['n_particles']
     n_chunks = metadata['n_chunks']
     
-    print(f"DEBUG: MPI rank {my_rank}: receiving {n_particles} particles from rank {src_proc} in {n_chunks} chunks", flush=True)
+    memory_after_metadata = get_memory_usage()
+    estimated_data_gb = n_particles * 24 / 1024**3
+    print(f"🔍 RECV RANK {my_rank}: receiving {n_particles:,} particles from rank {src_proc} in {n_chunks} chunks ({estimated_data_gb:.2f} GB estimated)", flush=True)
+    print(f"🔍 RECV RANK {my_rank}: Memory before receive: {memory_before_recv:.2f} GB", flush=True)
     
     if n_particles == 0:
         return {'x': np.array([]), 'y': np.array([]), 'z': np.array([]), 'mass': np.array([])}
     
-    # Initialize result arrays
+    # Initialize result arrays as lists to accumulate chunks
     particles = {'x': [], 'y': [], 'z': [], 'mass': []}
+    
+    memory_after_init = get_memory_usage()
+    init_overhead = memory_after_init - memory_after_metadata
+    print(f"🔍 RECV RANK {my_rank}: After lists initialization: {memory_after_init:.2f} GB (+{init_overhead:.3f} GB)", flush=True)
     
     # Receive chunks
     for chunk_idx in range(n_chunks):
+        memory_before_chunk = get_memory_usage()
+        
         tag_chunk = my_rank * 1000 + chunk_idx + 1
         chunk = comm.recv(source=src_proc, tag=tag_chunk)
         
+        memory_after_chunk_recv = get_memory_usage()
+        chunk_recv_overhead = memory_after_chunk_recv - memory_before_chunk
+        
         # Accumulate chunk data
+        chunk_particles = len(chunk['x'])
+        chunk_size_gb = chunk_particles * 24 / 1024**3
+        print(f"🔍 RECV RANK {my_rank}: Chunk {chunk_idx}: received {chunk_particles:,} particles ({chunk_size_gb:.3f} GB), memory: {memory_after_chunk_recv:.2f} GB (+{chunk_recv_overhead:.3f} GB)", flush=True)
+        
         for key in ['x', 'y', 'z', 'mass']:
             particles[key].append(chunk[key])
+        
+        memory_after_append = get_memory_usage()
+        append_overhead = memory_after_append - memory_after_chunk_recv
+        print(f"🔍 RECV RANK {my_rank}: After chunk {chunk_idx} append: {memory_after_append:.2f} GB (+{append_overhead:.3f} GB)", flush=True)
     
-    # Concatenate all chunks
+    # Concatenate all chunks - THIS IS WHERE OOM LIKELY OCCURS
+    memory_before_concat = get_memory_usage()
+    print(f"🔍 RECV RANK {my_rank}: Starting concatenation of {n_chunks} chunks...", flush=True)
+    
+    final_particles = {}
     for key in ['x', 'y', 'z', 'mass']:
         if particles[key]:
-            particles[key] = np.concatenate(particles[key])
+            memory_before_key = get_memory_usage()
+            print(f"🔍 RECV RANK {my_rank}: Concatenating key '{key}' ({len(particles[key])} arrays)...", flush=True)
+            
+            final_particles[key] = np.concatenate(particles[key])
+            
+            memory_after_key = get_memory_usage()
+            key_overhead = memory_after_key - memory_before_key
+            print(f"🔍 RECV RANK {my_rank}: Key '{key}' concatenated: {memory_after_key:.2f} GB (+{key_overhead:.3f} GB)", flush=True)
         else:
-            particles[key] = np.array([])
+            final_particles[key] = np.array([])
     
-    return particles
+    memory_after_concat = get_memory_usage()
+    concat_overhead = memory_after_concat - memory_before_concat
+    total_overhead = memory_after_concat - memory_before_recv
+    print(f"🔍 RECV RANK {my_rank}: CONCATENATION COMPLETE: {memory_after_concat:.2f} GB (+{concat_overhead:.2f} GB concat, +{total_overhead:.2f} GB total)", flush=True)
+    
+    # Clean up chunk lists to free memory
+    print(f"🔍 RECV RANK {my_rank}: Cleaning up chunk lists...", flush=True)
+    del particles
+    
+    memory_after_cleanup = get_memory_usage()
+    cleanup_savings = memory_after_concat - memory_after_cleanup
+    print(f"🔍 RECV RANK {my_rank}: After cleanup: {memory_after_cleanup:.2f} GB (-{cleanup_savings:.2f} GB)", flush=True)
+    
+    return final_particles
