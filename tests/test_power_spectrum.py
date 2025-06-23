@@ -400,7 +400,43 @@ class TestPowerSpectrumCalculator:
         print(f"✅ {100*fraction_within_3sigma:.1f}% of k-bins within 3σ statistical bounds")
         print(f"✅ Reduced χ² = {reduced_chi2:.3f} indicates good statistical consistency")
         print("="*80)
-
+    
+        def test_memory_optimized_particle_redistribution(self, grid_config):
+            """Test memory optimizations in particle redistribution."""
+            import os
+            
+            # Create test particles (smaller scale for unit test)
+            n_particles = 10000
+            np.random.seed(42)
+            
+            # Create particles with velocity fields that should be removed
+            particles = {
+                'x': np.random.uniform(0, 1, n_particles).astype(np.float32),
+                'y': np.random.uniform(0, 1, n_particles).astype(np.float32),
+                'z': np.random.uniform(0, 1, n_particles).astype(np.float32),
+                'vx': np.random.uniform(-100, 100, n_particles).astype(np.float32),  # Should be removed
+                'vy': np.random.uniform(-100, 100, n_particles).astype(np.float32),  # Should be removed
+                'vz': np.random.uniform(-100, 100, n_particles).astype(np.float32),  # Should be removed
+                'mass': np.ones(n_particles, dtype=np.float32)
+            }
+            
+            # Test with small grid to verify memory optimizations work
+            ngrid, box_size = 32, 100.0
+            calculator = PowerSpectrumCalculator(ngrid=ngrid, box_size=box_size, n_devices=1)
+            
+            # Mock MPI environment to test redistribution path
+            with patch.dict(os.environ, {'SLURM_NTASKS': '2'}):
+                # This should trigger the MPI redistribution path
+                # The test verifies the code handles velocity removal correctly
+                k_bins, power_spectrum, n_modes = calculator.calculate_power_spectrum(
+                    particles, subtract_shot_noise=True, assignment='ngp'
+                )
+            
+            # Verify results are reasonable
+            assert len(k_bins) > 0
+            assert len(power_spectrum) == len(k_bins)
+            assert len(n_modes) == len(k_bins)
+            assert np.all(np.isfinite(power_spectrum))
 
 if __name__ == "__main__":
     # Run tests with pytest

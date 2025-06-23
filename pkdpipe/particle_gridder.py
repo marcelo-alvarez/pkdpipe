@@ -350,7 +350,6 @@ class ParticleGridder:
             chunk_size = n_particles // n_processes
             
             memory_before = get_memory_usage()
-            print(f"🔍 CHUNKING: START - {n_particles:,} particles into {n_processes} chunks ({memory_before:.2f} GB)", flush=True)
             
             chunks = []
             for i in range(n_processes):
@@ -375,11 +374,9 @@ class ParticleGridder:
                 memory_after_chunk = get_memory_usage()
                 chunk_overhead = memory_after_chunk - memory_before_chunk
                 chunk_size_gb = chunk_particles * 24 / 1024**3
-                print(f"🔍 CHUNKING: Chunk {i}: {chunk_particles:,} particles, {chunk_size_gb:.3f} GB data, {chunk_overhead:.3f} GB overhead", flush=True)
-            
+                
             memory_after = get_memory_usage()
             total_overhead = memory_after - memory_before
-            print(f"🔍 CHUNKING: COMPLETE - {memory_after:.2f} GB (+{total_overhead:.2f} GB total overhead)", flush=True)
             
             return chunks
 
@@ -724,78 +721,44 @@ class ParticleGridder:
 
     def particles_to_slab(self, particles: Dict[str, np.ndarray], 
                                  y_min: int, y_max: int, ngrid: int) -> np.ndarray:
-                """
-                Grid particles to a spatial slab (for distributed processing) with multiprocessing.
+            """
+            Grid particles to a spatial slab (for distributed processing) with multiprocessing.
+            
+            Args:
+                particles: Dictionary with 'x', 'y', 'z', 'mass' arrays
+                y_min: Start index of slab in y-direction (including ghost zones)
+                y_max: End index of slab in y-direction (including ghost zones)
+                ngrid: Full grid resolution
                 
-                Args:
-                    particles: Dictionary with 'x', 'y', 'z', 'mass' arrays
-                    y_min: Start index of slab in y-direction (including ghost zones)
-                    y_max: End index of slab in y-direction (including ghost zones)
-                    ngrid: Full grid resolution
-                    
-                Returns:
-                    Density grid for the slab with shape (ngrid, slab_height, ngrid)
-                """
-                import psutil
-                import os
-                
-                def get_memory_usage():
-                    """Get current memory usage in GB"""
-                    process = psutil.Process()
-                    return process.memory_info().rss / 1024**3
-                
-                n_particles = len(particles['x'])
-                initial_memory = get_memory_usage()
-                print(f"🔍 MEMORY: particles_to_slab START - {n_particles:,} particles, {initial_memory:.2f} GB", flush=True)
-                
-                slab_height = y_max - y_min
-                
-                # For small particle counts or when multiprocessing isn't beneficial, use single-threaded
-                use_multiprocessing = n_particles > 50000 and self.n_cpu_cores > 1
-                
-                if not use_multiprocessing:
-                    print(f"🔍 MEMORY: Using single-threaded mode", flush=True)
-                    return self._particles_to_slab_single_thread(particles, y_min, y_max, ngrid)
-                
-                # Determine optimal number of processes
-                n_processes = self._get_optimal_n_processes(n_particles)
-                
-                print(f"🔍 MEMORY: Using {n_processes} processes for {n_particles:,} particles", flush=True)
-                print(f"🔍 MEMORY: SLURM_CPUS_PER_TASK = {os.environ.get('SLURM_CPUS_PER_TASK', 'not set')}", flush=True)
-                
-                # Check memory requirements for shared array approach
-                grid_size_bytes = ngrid * slab_height * ngrid * 4  # float32
-                grid_size_gb = grid_size_bytes / 1024**3
-                print(f"🔍 MEMORY: Shared grid size: {grid_size_gb:.2f} GB", flush=True)
-                
-                # Estimate total memory for chunking
-                particle_data_gb = n_particles * 24 / 1024**3  # 24 bytes per particle (x,y,z,vx,vy,vz)
-                chunk_overhead_gb = particle_data_gb  # Assume chunking doubles memory
-                local_grids_gb = n_processes * grid_size_gb  # Each worker creates local grid
-                estimated_total_gb = initial_memory + chunk_overhead_gb + local_grids_gb
-                
-                print(f"🔍 MEMORY: Current: {initial_memory:.2f} GB", flush=True)
-                print(f"🔍 MEMORY: Particle data: {particle_data_gb:.2f} GB", flush=True)
-                print(f"🔍 MEMORY: Est. chunk overhead: {chunk_overhead_gb:.2f} GB", flush=True)
-                print(f"🔍 MEMORY: Est. local grids: {local_grids_gb:.2f} GB", flush=True)
-                print(f"🔍 MEMORY: Est. total: {estimated_total_gb:.2f} GB", flush=True)
-                
-                # For very large grids, fall back to single-threaded to avoid memory issues
-                if grid_size_bytes > 8 * 1024**3:  # > 8GB
-                    print(f"🔍 MEMORY: Grid too large for multiprocessing ({grid_size_gb:.1f}GB), using single-threaded")
-                    return self._particles_to_slab_single_thread(particles, y_min, y_max, ngrid)
-                
-                # Use shared memory array to avoid broken pipe issues
-                memory_before_shared = get_memory_usage()
-                print(f"🔍 MEMORY: Before shared memory allocation: {memory_before_shared:.2f} GB", flush=True)
-                
-                result = self._particles_to_slab_shared_memory(particles, y_min, y_max, ngrid, n_processes)
-                
-                final_memory = get_memory_usage()
-                memory_increase = final_memory - initial_memory
-                print(f"🔍 MEMORY: particles_to_slab END - {final_memory:.2f} GB (+{memory_increase:.2f} GB)", flush=True)
-                
-                return result
+            Returns:
+                Density grid for the slab with shape (ngrid, slab_height, ngrid)
+            """
+            import os
+            
+            n_particles = len(particles['x'])
+            slab_height = y_max - y_min
+            
+            # For small particle counts or when multiprocessing isn't beneficial, use single-threaded
+            use_multiprocessing = n_particles > 50000 and self.n_cpu_cores > 1
+            
+            if not use_multiprocessing:
+                return self._particles_to_slab_single_thread(particles, y_min, y_max, ngrid)
+            
+            # Determine optimal number of processes
+            n_processes = self._get_optimal_n_processes(n_particles)
+            
+            # Check memory requirements for shared array approach
+            grid_size_bytes = ngrid * slab_height * ngrid * 4  # float32
+            
+            # For very large grids, fall back to single-threaded to avoid memory issues
+            if grid_size_bytes > 8 * 1024**3:  # > 8GB
+                return self._particles_to_slab_single_thread(particles, y_min, y_max, ngrid)
+            
+            # Use shared memory array to avoid broken pipe issues
+            result = self._particles_to_slab_shared_memory(particles, y_min, y_max, ngrid, n_processes)
+            
+            return result
+
 
 
 
@@ -851,13 +814,10 @@ class ParticleGridder:
         ngrid_x, slab_height, ngrid_z = grid.shape
         start_time = time.time()
         
-        print(f"DEBUG: Starting optimized CIC assignment for {len(x)} particles to {ngrid_x}x{slab_height}x{ngrid_z} grid", flush=True)
         
         if len(x) == 0:
-            print(f"DEBUG: No particles to assign, completing immediately", flush=True)
-            return
+                return
         
-        print(f"DEBUG: Step 1/5 - Computing grid coordinates and bounds check", flush=True)
         step_start = time.time()
         
         # Get integer grid coordinates (lower left corner) - use int32 for memory efficiency
@@ -868,13 +828,10 @@ class ParticleGridder:
         # Check bounds for y (slab dimension) - filter out invalid particles
         valid_mask = (iy >= 0) & (iy < slab_height - 1)
         n_valid = np.sum(valid_mask)
-        print(f"DEBUG: Step 1 complete in {time.time() - step_start:.2f}s - {n_valid}/{len(x)} particles valid", flush=True)
         
         if n_valid == 0:
-            print(f"DEBUG: No valid particles after bounds check, completing", flush=True)
-            return
+                return
         
-        print(f"DEBUG: Step 2/5 - Filtering particles and computing fractional distances", flush=True)
         step_start = time.time()
         
         # Apply mask to all arrays - use float32 for memory efficiency
@@ -891,9 +848,7 @@ class ParticleGridder:
         dy = y_valid - iy_valid.astype(np.float32)
         dz = z_valid - iz_valid.astype(np.float32)
         
-        print(f"DEBUG: Step 2 complete in {time.time() - step_start:.2f}s", flush=True)
         
-        print(f"DEBUG: Step 3/5 - Optimized CIC mass assignment (8 corners)", flush=True)
         step_start = time.time()
         
         # Highly optimized corner assignment - no intermediate arrays
@@ -903,8 +858,7 @@ class ParticleGridder:
             for j in range(2):
                 for k in range(2):
                     corner_count += 1
-                    print(f"DEBUG: Processing corner {corner_count}/8", flush=True)
-                    # Compute weights directly
+                                # Compute weights directly
                     w_x = (1-i) * (1-dx) + i * dx
                     w_y = (1-j) * (1-dy) + j * dy  
                     w_z = (1-k) * (1-dz) + k * dz
@@ -922,11 +876,8 @@ class ParticleGridder:
                                 (gi[valid_y_mask], gj[valid_y_mask], gk[valid_y_mask]), 
                                 weights[valid_y_mask])
         
-        print(f"DEBUG: Step 3 complete in {time.time() - step_start:.2f}s", flush=True)
         
         total_time = time.time() - start_time
-        print(f"DEBUG: Step 4/5 - CIC assignment COMPLETE for {n_valid} particles in {total_time:.2f}s total", flush=True)
-        print(f"DEBUG: Performance: {n_valid/total_time:.0f} particles/second", flush=True)
 
 
 
@@ -985,12 +936,6 @@ class ParticleGridder:
             """
             from multiprocessing import shared_memory, Process
             import numpy as np
-            import psutil
-            
-            def get_memory_usage():
-                """Get current memory usage in GB"""
-                process = psutil.Process()
-                return process.memory_info().rss / 1024**3
             
             slab_height = y_max - y_min
             
@@ -998,41 +943,17 @@ class ParticleGridder:
             grid_shape = (ngrid, slab_height, ngrid)
             grid_size = np.prod(grid_shape)
             
-            memory_before_chunking = get_memory_usage()
-            print(f"🔍 MEMORY: Before particle chunking: {memory_before_chunking:.2f} GB", flush=True)
-            
             # Split particles into chunks
             particle_chunks = self._chunk_particles(particles, n_processes)
-            
-            memory_after_chunking = get_memory_usage()
-            chunking_overhead = memory_after_chunking - memory_before_chunking
-            print(f"🔍 MEMORY: After particle chunking: {memory_after_chunking:.2f} GB (+{chunking_overhead:.2f} GB)", flush=True)
-            print(f"🔍 MEMORY: Created {len(particle_chunks)} chunks", flush=True)
-            
-            # Log chunk sizes
-            for i, chunk in enumerate(particle_chunks):
-                chunk_particles = len(chunk['x'])
-                chunk_size_gb = chunk_particles * 24 / 1024**3
-                print(f"🔍 MEMORY: Chunk {i}: {chunk_particles:,} particles ({chunk_size_gb:.3f} GB)", flush=True)
-            
-            print(f"🔍 MEMORY: Creating shared memory array: {grid_shape} = {grid_size:,} elements", flush=True)
-            
-            memory_before_shared = get_memory_usage()
             
             # Create shared memory block
             shm = shared_memory.SharedMemory(create=True, size=grid_size * 4)  # float32 = 4 bytes
             shared_grid = np.ndarray(grid_shape, dtype=np.float32, buffer=shm.buf)
             shared_grid.fill(0.0)  # Initialize to zero
             
-            memory_after_shared = get_memory_usage()
-            shared_overhead = memory_after_shared - memory_before_shared
-            print(f"🔍 MEMORY: After shared memory creation: {memory_after_shared:.2f} GB (+{shared_overhead:.2f} GB)", flush=True)
-            
             try:
                 # Create worker processes
                 processes = []
-                memory_before_workers = get_memory_usage()
-                print(f"🔍 MEMORY: Before starting workers: {memory_before_workers:.2f} GB", flush=True)
                 
                 for i, chunk in enumerate(particle_chunks):
                     if len(chunk['x']) > 0:  # Only start process if chunk has particles
@@ -1041,42 +962,21 @@ class ParticleGridder:
                                        self.assignment, shm.name, grid_shape, i))
                         processes.append(p)
                         p.start()
-                        
-                        # Check memory after each worker starts
-                        current_memory = get_memory_usage()
-                        print(f"🔍 MEMORY: After starting worker {i}: {current_memory:.2f} GB", flush=True)
-                
-                memory_after_worker_start = get_memory_usage()
-                worker_start_overhead = memory_after_worker_start - memory_before_workers
-                print(f"🔍 MEMORY: All {len(processes)} workers started: {memory_after_worker_start:.2f} GB (+{worker_start_overhead:.2f} GB)", flush=True)
                 
                 # Wait for all processes to complete
-                for i, p in enumerate(processes):
+                for p in enumerate(processes):
                     p.join()
-                    current_memory = get_memory_usage()
-                    print(f"🔍 MEMORY: Worker {i} completed: {current_memory:.2f} GB", flush=True)
-                
-                memory_after_workers = get_memory_usage()
-                print(f"🔍 MEMORY: All workers completed: {memory_after_workers:.2f} GB", flush=True)
                     
                 # Copy result from shared memory to regular array
                 result_grid = shared_grid.copy()
-                
-                memory_after_copy = get_memory_usage()
-                copy_overhead = memory_after_copy - memory_after_workers
-                print(f"🔍 MEMORY: After grid copy: {memory_after_copy:.2f} GB (+{copy_overhead:.2f} GB)", flush=True)
                 
             finally:
                 # Clean up shared memory
                 shm.close()
                 shm.unlink()
-                
-                final_memory = get_memory_usage()
-                print(f"🔍 MEMORY: After cleanup: {final_memory:.2f} GB", flush=True)
             
-            total_mass = result_grid.sum()
-            print(f"🔍 MEMORY: Shared memory gridding complete, total mass: {total_mass:.2e}", flush=True)
             return result_grid
+
 
 
 
@@ -1096,41 +996,19 @@ def _cic_slab_shared_worker(particle_chunk, ngrid, box_size, y_min, y_max, assig
     """
     from multiprocessing import shared_memory
     import numpy as np
-    import psutil
-    import os
-    
-    def get_memory_usage():
-        """Get current memory usage in GB"""
-        process = psutil.Process()
-        return process.memory_info().rss / 1024**3
-    
-    worker_start_memory = get_memory_usage()
-    print(f"🔍 WORKER {worker_id}: START - {worker_start_memory:.2f} GB", flush=True)
     
     # Connect to existing shared memory
     shm = shared_memory.SharedMemory(name=shm_name)
     shared_grid = np.ndarray(grid_shape, dtype=np.float32, buffer=shm.buf)
-    
-    memory_after_shm_connect = get_memory_usage()
-    print(f"🔍 WORKER {worker_id}: After shared memory connect: {memory_after_shm_connect:.2f} GB", flush=True)
     
     try:
         # Create local grid for this worker
         slab_height = y_max - y_min
         local_grid = np.zeros((ngrid, slab_height, ngrid), dtype=np.float32)
         
-        memory_after_local_grid = get_memory_usage()
-        local_grid_overhead = memory_after_local_grid - memory_after_shm_connect
-        print(f"🔍 WORKER {worker_id}: After local grid creation: {memory_after_local_grid:.2f} GB (+{local_grid_overhead:.2f} GB)", flush=True)
-        
         # Handle empty chunk
         if len(particle_chunk['x']) == 0:
-            print(f"🔍 WORKER {worker_id}: Empty chunk, returning", flush=True)
             return
-        
-        chunk_particles = len(particle_chunk['x'])
-        chunk_size_gb = chunk_particles * 24 / 1024**3
-        print(f"🔍 WORKER {worker_id}: Processing {chunk_particles:,} particles ({chunk_size_gb:.3f} GB)", flush=True)
         
         # Convert particle positions to grid coordinates
         grid_spacing = box_size / ngrid
@@ -1138,10 +1016,6 @@ def _cic_slab_shared_worker(particle_chunk, ngrid, box_size, y_min, y_max, assig
         y_grid = np.asarray(particle_chunk['y']) / grid_spacing
         z_grid = np.asarray(particle_chunk['z']) / grid_spacing
         masses = np.asarray(particle_chunk['mass'])
-        
-        memory_after_coords = get_memory_usage()
-        coords_overhead = memory_after_coords - memory_after_local_grid
-        print(f"🔍 WORKER {worker_id}: After coordinate arrays: {memory_after_coords:.2f} GB (+{coords_overhead:.2f} GB)", flush=True)
         
         # Apply periodic boundary conditions
         x_grid = np.mod(x_grid, ngrid)
@@ -1151,7 +1025,6 @@ def _cic_slab_shared_worker(particle_chunk, ngrid, box_size, y_min, y_max, assig
         # Filter particles that fall within this slab (including ghosts)
         in_slab = (y_grid >= y_min) & (y_grid < y_max)
         if not np.any(in_slab):
-            print(f"🔍 WORKER {worker_id}: No particles in slab, returning", flush=True)
             return
         
         x_slab = x_grid[in_slab]
@@ -1159,13 +1032,7 @@ def _cic_slab_shared_worker(particle_chunk, ngrid, box_size, y_min, y_max, assig
         z_slab = z_grid[in_slab]
         mass_slab = masses[in_slab]
         
-        memory_after_filtering = get_memory_usage()
-        filtering_overhead = memory_after_filtering - memory_after_coords
-        print(f"🔍 WORKER {worker_id}: After filtering: {memory_after_filtering:.2f} GB (+{filtering_overhead:.2f} GB)", flush=True)
-        print(f"🔍 WORKER {worker_id}: Gridding {len(x_slab):,} particles in slab", flush=True)
-        
         # Perform assignment on local grid
-        memory_before_gridding = get_memory_usage()
         if assignment == 'cic':
             _cic_assign_slab_worker(local_grid, x_slab, y_slab, z_slab, mass_slab)
         elif assignment == 'ngp':
@@ -1174,19 +1041,11 @@ def _cic_slab_shared_worker(particle_chunk, ngrid, box_size, y_min, y_max, assig
             # TSC not implemented for slab workers yet, fall back to CIC
             _cic_assign_slab_worker(local_grid, x_slab, y_slab, z_slab, mass_slab)
         
-        memory_after_gridding = get_memory_usage()
-        gridding_overhead = memory_after_gridding - memory_before_gridding
-        print(f"🔍 WORKER {worker_id}: After gridding: {memory_after_gridding:.2f} GB (+{gridding_overhead:.2f} GB)", flush=True)
-        
         # Atomically add local grid to shared grid
         # Note: This isn't truly atomic, but race conditions are unlikely with spatial locality
         shared_grid += local_grid
         
-        memory_after_add = get_memory_usage()
-        local_mass = local_grid.sum()
-        total_memory_increase = memory_after_add - worker_start_memory
-        print(f"🔍 WORKER {worker_id}: COMPLETED - {memory_after_add:.2f} GB (+{total_memory_increase:.2f} GB total), local mass: {local_mass:.2e}", flush=True)
-        
     finally:
         # Close shared memory connection (but don't unlink - main process will do that)
         shm.close()
+

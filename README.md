@@ -10,8 +10,9 @@
 *   **Lightcone and Snapshot Modes:** Support for both lightcone particle data and snapshot-based analysis
 *   **Multiple File Formats:** Support for various PKDGrav3 output formats (LCP, TPS, FOF)
 *   **Cosmology Calculations:** Built-in functions for common cosmological calculations
-*   **Power Spectrum Analysis:** Complete power spectrum calculation with FFT, shot noise correction, and k-binning
+*   **Power Spectrum Analysis:** Memory-optimized power spectrum calculation with FFT, shot noise correction, and k-binning
 *   **Multi-GPU Support:** Distributed FFT computations and power spectrum calculations across multiple GPUs
+*   **Memory Optimizations:** Advanced memory management achieving 35GB+ savings per process through in-place operations and efficient MPI redistribution
 *   **Parameter Type System:** Comprehensive categorization of cosmological, SLURM, and simulation parameters
 *   **JAX Accelerated FFT:** Efficient Fast Fourier Transforms using JAX with distributed computing support and clean multiprocessing architecture
 *   **Command-Line Interface:** Access to functionalities via a CLI

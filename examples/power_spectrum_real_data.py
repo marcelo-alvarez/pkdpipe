@@ -203,28 +203,18 @@ def calculate_power_spectrum(particles_or_data, box_size, ngrid=512, assignment=
         particles_rec = list(particles_or_data.values())[0]
         
         # Handle mass field - tps format has mass, xvp dataset might not need it for power spectrum
-        print(f"DEBUG: particles_rec type: {type(particles_rec)}")
-        print(f"DEBUG: particles_rec dtype: {particles_rec.dtype}")
-        print(f"DEBUG: particles_rec shape: {particles_rec.shape}")
         
         try:
             if 'mass' in particles_rec.dtype.names:
-                print(f"DEBUG: Extracting mass field...")
-                mass_data = particles_rec['mass']
-                print(f"DEBUG: mass_data type: {type(mass_data)}, shape: {mass_data.shape}")
-            else:
+                        mass_data = particles_rec['mass']
+                    else:
                 # Default to unit mass for datasets without explicit mass
-                print(f"DEBUG: Creating unit mass array...")
-                mass_data = np.ones(len(particles_rec['x']))
+                        mass_data = np.ones(len(particles_rec['x']))
             
-            print(f"DEBUG: Converting x field...")
-            x_data = np.array(particles_rec['x'])
-            print(f"DEBUG: Converting y field...")
-            y_data = np.array(particles_rec['y'])
-            print(f"DEBUG: Converting z field...")
-            z_data = np.array(particles_rec['z'])
-            print(f"DEBUG: Converting mass field...")
-            mass_array = np.array(mass_data)
+                x_data = np.array(particles_rec['x'])
+                y_data = np.array(particles_rec['y'])
+                z_data = np.array(particles_rec['z'])
+                mass_array = np.array(mass_data)
             
             data_input = {
                 'x': x_data,
@@ -233,9 +223,7 @@ def calculate_power_spectrum(particles_or_data, box_size, ngrid=512, assignment=
                 'mass': mass_array
             }
             print(f"Converting snapshot data: {len(data_input['x']):,} particles")
-            print(f"DEBUG: data_input keys: {list(data_input.keys())}")
-            print(f"DEBUG: data_input['x'] type: {type(data_input['x'])}")
-        except Exception as e:
+                except Exception as e:
             print(f"ERROR in particle conversion: {e}")
             import traceback
             traceback.print_exc()
