@@ -15,6 +15,7 @@ Example usage:
 """
 
 import numpy as np
+import os
 from typing import Tuple, Optional
 
 # JAX imports are deferred to avoid CUDA initialization conflicts with multiprocessing
@@ -192,18 +193,23 @@ def create_slab_k_grid(ngrid: int, box_size: float, y_min: int, y_max: int) -> n
     Args:
         ngrid: Full grid resolution (e.g., 512)
         box_size: Simulation box size in Mpc/h
-        y_min: Start index of slab in y-direction
-        y_max: End index of slab in y-direction
+        y_min: Start index of slab in y-direction (unused - kept for compatibility)
+        y_max: End index of slab in y-direction (unused - kept for compatibility)
         
     Returns:
         k-magnitude grid for the slab portion
     """
-    fundamental_mode = 2 * np.pi / box_size
-    slab_height = y_max - y_min
+    # Simple approach: slab height is just ngrid divided by number of processes
+    # This assumes ngrid is divisible by n_processes (e.g., 512/4=128)
+    slurm_ntasks = int(os.environ.get('SLURM_NTASKS', 1))
+    slab_height_cells = ngrid // slurm_ntasks
+    
+    print(f"DEBUG create_slab_k_grid: Simple approach - ngrid={ngrid}, n_processes={slurm_ntasks}, slab_height_cells={slab_height_cells}", flush=True)
     
     # Create frequency grids
+    fundamental_mode = 2 * np.pi / box_size
     kx = np.fft.fftfreq(ngrid, d=1.0) * ngrid * fundamental_mode
-    ky = np.fft.fftfreq(slab_height, d=1.0) * ngrid * fundamental_mode  # Note: still use ngrid for proper scaling
+    ky = np.fft.fftfreq(slab_height_cells, d=1.0) * ngrid * fundamental_mode  # Note: still use ngrid for proper scaling
     kz = np.fft.rfftfreq(ngrid, d=1.0) * ngrid * fundamental_mode
     
     # Create 3D grid for the slab
@@ -280,8 +286,8 @@ def bin_power_spectrum_distributed(k_grid: np.ndarray, power_grid: np.ndarray,
             except Exception:
                 # Fallback if distributed operations not available
                 global_power_sums = local_power_sums
-            global_k_sums = local_k_sums
-            global_mode_counts = local_mode_counts
+                global_k_sums = local_k_sums
+                global_mode_counts = local_mode_counts
     else:
         # Not in distributed mode - use local values
         global_power_sums = local_power_sums

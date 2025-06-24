@@ -313,8 +313,8 @@ class PowerSpectrumCalculator:
             pass
         
         # Extract owned portion (remove ghost zones)
-        ghost_start = base_y_min - y_min
-        ghost_end = ghost_start + slab_height
+        ghost_start = int(round((base_y_min - y_min) * self.ngrid / self.box_size))
+        ghost_end = int(round((base_y_min + slab_height - y_min) * self.ngrid / self.box_size))
         owned_slab = full_slab[:, ghost_start:ghost_end, :]  # Shape: (128, slab_height, 128)
         
         
@@ -358,7 +358,10 @@ class PowerSpectrumCalculator:
             power_3d_np = power_3d_slab
         
         # Step 5: Create k-grid for k-space slab and apply corrections
-        k_grid_slab = create_slab_k_grid(self.ngrid, self.box_size, base_y_min, base_y_max)
+        # Convert grid coordinates to physical coordinates for create_slab_k_grid
+        physical_y_min = base_y_min * self.box_size / self.ngrid  
+        physical_y_max = base_y_max * self.box_size / self.ngrid
+        k_grid_slab = create_slab_k_grid(self.ngrid, self.box_size, physical_y_min, physical_y_max)
         power_3d_corrected = self._apply_window_correction(power_3d_np, k_grid_slab, assignment)
         
         # Step 6: Bin and reduce across processes
@@ -722,6 +725,7 @@ class PowerSpectrumCalculator:
         Returns:
             Corrected 3D power spectrum
         """
+        print(f"DEBUG window correction: power_3d.shape = {power_3d.shape}, k_grid.shape = {k_grid.shape}", flush=True)
         if assignment.lower() == 'cic':
             window = self._cic_window_function(k_grid)
         elif assignment.lower() == 'ngp':
@@ -752,10 +756,10 @@ class PowerSpectrumCalculator:
         # This handles both full grid and slab decomposition cases
         nx, ny, nz_rfft = k_grid.shape
         
-        # Create k-component grids with correct dimensions
+        # Create k-component grids with correct dimensions  
         kx = 2 * np.pi * np.fft.fftfreq(nx, dx)
-        ky = 2 * np.pi * np.fft.fftfreq(ny, dx)  # Use actual slab height, not self.ngrid
-        kz = 2 * np.pi * np.fft.rfftfreq(self.ngrid, dx)  # Real FFT dimension always uses full grid
+        ky = 2 * np.pi * np.fft.fftfreq(ny, dx)  # Use actual slab dimensions
+        kz = 2 * np.pi * np.fft.rfftfreq(self.ngrid, dx)[:nz_rfft]  # Slice to match actual grid shape
         
         kx_3d, ky_3d, kz_3d = np.meshgrid(kx, ky, kz, indexing='ij')
         
@@ -782,11 +786,13 @@ class PowerSpectrumCalculator:
         # Determine grid dimensions from input k_grid shape
         # This handles both full grid and slab decomposition cases
         nx, ny, nz_rfft = k_grid.shape
+        print(f"DEBUG NGP window: k_grid.shape = {k_grid.shape}, nx={nx}, ny={ny}, nz_rfft={nz_rfft}", flush=True)
         
-        # Create k-component grids with correct dimensions
-        kx = 2 * np.pi * np.fft.fftfreq(nx, dx)
-        ky = 2 * np.pi * np.fft.fftfreq(ny, dx)  # Use actual slab height, not self.ngrid
-        kz = 2 * np.pi * np.fft.rfftfreq(self.ngrid, dx)  # Real FFT dimension always uses full grid
+        # Create frequency arrays matching the actual grid dimensions
+        # For distributed mode, ny should be the slab height (e.g. 128), not full grid (512)
+        kx = 2 * np.pi * np.fft.fftfreq(nx, dx)  # nx should always be ngrid (512)
+        ky = 2 * np.pi * np.fft.fftfreq(ny, dx)  # ny is the actual slab height (128) 
+        kz = 2 * np.pi * np.fft.rfftfreq(self.ngrid, dx)[:nz_rfft]  # Slice to match actual grid shape
         
         kx_3d, ky_3d, kz_3d = np.meshgrid(kx, ky, kz, indexing='ij')
         
@@ -799,7 +805,9 @@ class PowerSpectrumCalculator:
         sinc_z = safe_sinc(kz_3d * dx / 2.0)
         
         # NGP window function is product of sinc functions
-        return sinc_x * sinc_y * sinc_z
+        window = sinc_x * sinc_y * sinc_z
+        print(f"DEBUG NGP window: final window.shape = {window.shape}", flush=True)
+        return window
     
     def _finalize_power_spectrum(self, k_binned: np.ndarray, power_binned: np.ndarray,
                                n_modes: np.ndarray, subtract_shot_noise: bool,

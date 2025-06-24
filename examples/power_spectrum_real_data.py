@@ -580,17 +580,26 @@ def main():
             print(f"About to call calculate_power_spectrum...")
             sys.stdout.flush()
         
+        # Get particle count for analysis BEFORE power spectrum calculation
+        if args.debug_synthetic:
+            # For synthetic data, get particle count from the data
+            if isinstance(particles_or_data, dict):
+                first_box = list(particles_or_data.values())[0]
+                n_particles = len(first_box['x']) if isinstance(first_box, dict) else len(first_box)
+            else:
+                n_particles = 715_827_876  # Default synthetic particle count per process
+        else:
+            # For real data, estimate from file size
+            file_size = snapshot_file.stat().st_size
+            record_size = 36  # TPS format: 9 fields × 4 bytes
+            header_size = 32
+            n_particles = (file_size - header_size) // record_size
+        
         print(f"Process {process_id}: Entering calculate_power_spectrum...")
         k_bins, power_spectrum, n_modes, density_stats = calculate_power_spectrum(
             particles_or_data, box_size, args.ngrid, args.assignment, args.n_devices
         )
         print(f"Process {process_id}: Returned from calculate_power_spectrum...")
-        
-        # Get particle count for analysis (estimate from file size)
-        file_size = snapshot_file.stat().st_size
-        record_size = 36  # TPS format: 9 fields × 4 bytes
-        header_size = 32
-        n_particles = (file_size - header_size) // record_size
         
         # Analyze results
         analyze_results(k_bins, power_spectrum, n_modes, density_stats, 
