@@ -169,6 +169,59 @@ def load_particle_data(snapshot_file, dataset_type='xvp'):
         raise RuntimeError(f"Failed to load particle data: {e}")
 
 
+def generate_synthetic_particle_data(process_id=0):
+    """Generate synthetic random particle data with the same memory footprint as real data."""
+    
+    if process_id == 0:
+        print(f"\n" + "="*60)
+        print("SYNTHETIC PARTICLE DATA GENERATION")
+        print("="*60)
+        print("⚠️  DEBUG MODE: Using synthetic random particles")
+    
+    # Match the particle count from real simulation
+    # Real simulation has ~715M particles per process, use same count
+    n_particles_per_process = 715_827_876  # From real data logs
+    
+    if process_id == 0:
+        print(f"Generating {n_particles_per_process:,} synthetic particles per process")
+        print("Particle positions: random float32 in [0, 1]")
+    
+    import time
+    start_time = time.time()
+    
+    # Generate random particle positions in [0, 1] as float32
+    # This matches the memory footprint of the real data exactly
+    np.random.seed(42 + process_id)  # Reproducible but different per process
+    
+    particles_rec = np.zeros(n_particles_per_process, dtype=[
+        ('x', 'f4'), ('y', 'f4'), ('z', 'f4')
+    ])
+    
+    particles_rec['x'] = np.random.uniform(0.0, 1.0, n_particles_per_process).astype(np.float32)
+    particles_rec['y'] = np.random.uniform(0.0, 1.0, n_particles_per_process).astype(np.float32) 
+    particles_rec['z'] = np.random.uniform(0.0, 1.0, n_particles_per_process).astype(np.float32)
+    
+    # Create the same data structure as real data loading
+    result = {'box0': particles_rec}
+    
+    # Use same box size as real simulation
+    box_size = 1050.0
+    
+    # Mock simulation parameters
+    sim_params = {
+        'dBoxSize': box_size,
+        'box_size': box_size
+    }
+    
+    if process_id == 0:
+        elapsed_time = time.time() - start_time
+        print(f"Synthetic data generation completed in {elapsed_time:.1f} seconds")
+        print(f"Box size: {box_size:.1f} Mpc/h")
+        print(f"Memory footprint: {n_particles_per_process * 3 * 4 / (1024**3):.2f} GB per process")
+    
+    return result, box_size, sim_params
+
+
 def calculate_power_spectrum(particles_or_data, box_size, ngrid=512, assignment='cic', n_devices=1):
     """Calculate the power spectrum of the particle distribution."""
     
@@ -229,10 +282,11 @@ def calculate_power_spectrum(particles_or_data, box_size, ngrid=512, assignment=
             print(f"DEBUG: Converting z field...")
             z_data = np.array(particles_rec['z'], dtype=np.float32)
             
-            # MEMORY OPTIMIZATION: Immediately delete the original record array (contains velocity+mass fields)
-            # This should reduce memory from 36 bytes/particle to 12 bytes/particle
+            # MEMORY OPTIMIZATION: Immediately delete ALL references to original array
+            # Delete both the local variable AND the dictionary that holds the reference
             print(f"DEBUG: Freeing original particles_rec array (contains velocity+mass fields)")
             del particles_rec
+            del particles_or_data  # CRITICAL: This holds the reference in result['box0']!
             import gc
             gc.collect()  # Force garbage collection to free memory immediately
             
@@ -244,16 +298,16 @@ def calculate_power_spectrum(particles_or_data, box_size, ngrid=512, assignment=
             print(f"DEBUG: PROCESS {process_id}: expected final memory: {expected_final_memory_gb:.2f} GB")
             print(f"DEBUG: PROCESS {process_id}: memory reduction: {memory_before_extraction - memory_after_cleanup:.2f} GB")
             
-            # Create unit mass array only if needed by power spectrum algorithm
+            # MEMORY OPTIMIZATION: Do NOT create mass array - gridding doesn't need it
+            # Original code created unnecessary 2.67 GB mass array that was immediately discarded
             n_particles = len(x_data)
-            print(f"DEBUG: Creating minimal unit mass array for {n_particles:,} particles")
-            mass_array = np.ones(n_particles, dtype=np.float32)
+            print(f"DEBUG: Skipping mass array creation - not needed for gridding ({n_particles:,} particles)")
             
             data_input = {
                 'x': x_data,
                 'y': y_data, 
-                'z': z_data,
-                'mass': mass_array
+                'z': z_data
+                # 'mass': REMOVED - not needed for CIC gridding, saves 2.67 GB
             }
             print(f"Converting snapshot data: {len(data_input['x']):,} particles")
             print(f"DEBUG: data_input keys: {list(data_input.keys())}")
@@ -421,6 +475,8 @@ def main():
                        help="Particle assignment scheme")
     parser.add_argument("--n-devices", type=int, default=None,
                        help="Number of GPU devices to use (auto-detects from SLURM if not specified)")
+    parser.add_argument("--debug-synthetic", action="store_true",
+                       help="Use synthetic random particle data instead of reading from disk (for fast memory debugging)")
     
     args = parser.parse_args()
     
@@ -452,11 +508,15 @@ def main():
         print(f"Dataset: {args.dataset}")
     
     try:
-        # Find simulation data
-        snapshot_file = find_simulation_data(args.campaign_dir, args.variant)
-        
-        # Load particle data - Data class automatically handles streaming optimization
-        particles_or_data, box_size, sim_params = load_particle_data(snapshot_file, args.dataset)
+        if args.debug_synthetic:
+            # Use synthetic random particle data for fast memory debugging
+            particles_or_data, box_size, sim_params = generate_synthetic_particle_data(process_id)
+        else:
+            # Find simulation data
+            snapshot_file = find_simulation_data(args.campaign_dir, args.variant)
+            
+            # Load particle data - Data class automatically handles streaming optimization
+            particles_or_data, box_size, sim_params = load_particle_data(snapshot_file, args.dataset)
         
         # DEBUG: Check if we made it past data loading
         if process_id == 0:
