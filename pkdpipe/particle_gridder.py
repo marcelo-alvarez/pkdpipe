@@ -18,12 +18,112 @@ Example usage:
 import numpy as np
 from typing import Dict, Union, List
 import os
-from multiprocessing import Pool, cpu_count
+import gc
+from multiprocessing import Pool, cpu_count, shared_memory
+
+
+def _cic_worker_shared_memory(args):
+    """
+    Shared memory worker function for multiprocessing CIC assignment.
+    
+    Args:
+        args: Tuple of (shared_memory_info, start_idx, end_idx, ngrid, box_size)
+        
+    Returns:
+        Density grid from this particle chunk
+    """
+    shared_info, start_idx, end_idx, ngrid, box_size = args
+    
+    # Handle empty chunk
+    chunk_size = end_idx - start_idx
+    if chunk_size == 0:
+        return np.zeros((ngrid, ngrid, ngrid), dtype=np.float32)
+    
+    try:
+        # Reconstruct shared memory arrays
+        x_shm = shared_memory.SharedMemory(name=shared_info['x_name'])
+        y_shm = shared_memory.SharedMemory(name=shared_info['y_name']) 
+        z_shm = shared_memory.SharedMemory(name=shared_info['z_name'])
+        mass_shm = shared_memory.SharedMemory(name=shared_info['mass_name'])
+        
+        # Create numpy views (no copying)
+        x_array = np.ndarray(shared_info['shape'], dtype=np.float32, buffer=x_shm.buf)
+        y_array = np.ndarray(shared_info['shape'], dtype=np.float32, buffer=y_shm.buf)
+        z_array = np.ndarray(shared_info['shape'], dtype=np.float32, buffer=z_shm.buf)
+        mass_array = np.ndarray(shared_info['shape'], dtype=np.float32, buffer=mass_shm.buf)
+        
+        # Extract chunk without copying
+        x_chunk = x_array[start_idx:end_idx]
+        y_chunk = y_array[start_idx:end_idx]
+        z_chunk = z_array[start_idx:end_idx]
+        mass_chunk = mass_array[start_idx:end_idx]
+        
+        # Create positions array for this chunk
+        positions = np.column_stack([x_chunk, y_chunk, z_chunk])
+        masses = mass_chunk
+        
+        # Convert to grid coordinates
+        grid_spacing = box_size / ngrid
+        grid_coords = positions / grid_spacing
+        
+        # Initialize density grid
+        density_grid = np.zeros((ngrid, ngrid, ngrid), dtype=np.float32)
+        
+        # Get integer grid coordinates (lower-left corner of cell)
+        i_coords = np.floor(grid_coords).astype(int)
+        
+        # Get fractional offsets within cells
+        dx = grid_coords - i_coords
+        
+        # Apply periodic boundary conditions
+        i_coords = i_coords % ngrid
+        
+        # Vectorized CIC assignment
+        n_particles = len(masses)
+        
+        # Weight arrays for all particles and all 8 corners
+        weights = np.zeros((n_particles, 8), dtype=np.float32)
+        grid_indices = np.zeros((n_particles, 8, 3), dtype=int)
+        
+        # Calculate weights and indices for all 8 corners simultaneously
+        corner_idx = 0
+        for i in range(2):
+            for j in range(2):
+                for k in range(2):
+                    # Weights for this corner (vectorized)
+                    weights[:, corner_idx] = (
+                        ((1-i) * (1-dx[:, 0]) + i * dx[:, 0]) *
+                        ((1-j) * (1-dx[:, 1]) + j * dx[:, 1]) *
+                        ((1-k) * (1-dx[:, 2]) + k * dx[:, 2])
+                    )
+                    
+                    # Grid indices with periodic wrapping
+                    grid_indices[:, corner_idx, 0] = (i_coords[:, 0] + i) % ngrid
+                    grid_indices[:, corner_idx, 1] = (i_coords[:, 1] + j) % ngrid
+                    grid_indices[:, corner_idx, 2] = (i_coords[:, 2] + k) % ngrid
+                    
+                    corner_idx += 1
+        
+        # Vectorized mass assignment using np.add.at
+        for corner in range(8):
+            gi = grid_indices[:, corner, 0]
+            gj = grid_indices[:, corner, 1] 
+            gk = grid_indices[:, corner, 2]
+            weighted_masses = masses * weights[:, corner]
+            
+            # Add weighted mass to grid
+            np.add.at(density_grid, (gi, gj, gk), weighted_masses)
+        
+        return density_grid
+        
+    except Exception as e:
+        print(f"Worker {start_idx}-{end_idx}: Error accessing shared memory: {e}")
+        return np.zeros((ngrid, ngrid, ngrid), dtype=np.float32)
 
 
 def _cic_worker(args):
     """
-    Worker function for multiprocessing CIC assignment.
+    Legacy worker function for multiprocessing CIC assignment.
     
     Args:
         args: Tuple of (particle_chunk, ngrid, box_size)
@@ -367,7 +467,7 @@ class ParticleGridder:
                     'x': particles['x'][start_idx:end_idx],
                     'y': particles['y'][start_idx:end_idx], 
                     'z': particles['z'][start_idx:end_idx],
-                    'mass': particles['mass'][start_idx:end_idx]
+                    'mass': np.ones(end_idx - start_idx, dtype=np.float32)  # Unit masses
                 }
                 chunks.append(chunk)
                 
@@ -406,13 +506,13 @@ class ParticleGridder:
         
         # Check that all arrays have same length
         n_particles = len(particles['x'])
-        for key in ['y', 'z', 'mass']:
+        for key in ['y', 'z']:  # REMOVED 'mass' - use unit masses for CIC gridding
             if len(particles[key]) != n_particles:
                 raise ValueError(f"Inconsistent array lengths: {key} has {len(particles[key])}, expected {n_particles}")
         
-        # Extract positions and masses
+        # Extract positions and use unit masses (equal mass particles for density field)
         positions = np.column_stack([particles['x'], particles['y'], particles['z']])
-        masses = particles['mass']
+        masses = np.ones(n_particles, dtype=np.float32)  # Unit masses for equal-mass particles
         
         # Check bounds
         if np.any(positions < 0) or np.any(positions >= self.box_size):
@@ -435,10 +535,10 @@ class ParticleGridder:
     
     def _cic_assignment(self, grid_coords: np.ndarray, masses: np.ndarray) -> np.ndarray:
         """
-        Cloud-in-Cell mass assignment using vectorized operations with multiprocessing.
+        Cloud-in-Cell mass assignment using shared memory multiprocessing.
         
-        Optimized version that uses multiprocessing to parallelize particle processing
-        across available CPU cores for better performance with large particle counts.
+        Optimized version that uses shared memory to prevent memory duplication
+        during multiprocessing, critical for large particle counts in MPI environments.
         """
         n_particles = len(masses)
         
@@ -449,33 +549,80 @@ class ParticleGridder:
             # Use single-threaded version for small particle counts
             return self._cic_assignment_single_thread(grid_coords, masses)
         
-        # Prepare particles for multiprocessing
-        particles = {
-            'x': grid_coords[:, 0] * self.grid_spacing,  # Convert back to physical coordinates
-            'y': grid_coords[:, 1] * self.grid_spacing,
-            'z': grid_coords[:, 2] * self.grid_spacing,
-            'mass': masses
-        }
+        # Create shared memory arrays to prevent memory duplication during fork
+        print(f"CIC assignment: Creating shared memory for {n_particles:,} particles")
         
-        # Determine optimal number of processes
-        n_processes = self._get_optimal_n_processes(n_particles)
+        # Prepare coordinate arrays (convert back to physical coordinates)
+        x_coords = (grid_coords[:, 0] * self.grid_spacing).astype(np.float32)
+        y_coords = (grid_coords[:, 1] * self.grid_spacing).astype(np.float32)
+        z_coords = (grid_coords[:, 2] * self.grid_spacing).astype(np.float32)
+        mass_array = masses.astype(np.float32)
         
-        print(f"CIC assignment: Using {n_processes} processes for {n_particles:,} particles")
-        
-        # Split particles into chunks
-        particle_chunks = self._chunk_particles(particles, n_processes)
-        
-        # Prepare arguments for worker processes
-        worker_args = [(chunk, self.ngrid, self.box_size) for chunk in particle_chunks]
-        
-        # Process chunks in parallel
-        with Pool(processes=n_processes) as pool:
-            chunk_grids = pool.map(_cic_worker, worker_args)
-        
-        # Sum all chunk grids
-        density_grid = np.sum(chunk_grids, axis=0).astype(np.float32)
-        
-        return density_grid
+        # Create shared memory blocks
+        shared_memory_blocks = []
+        try:
+            # Create shared memory for each coordinate and mass array
+            x_shm = shared_memory.SharedMemory(create=True, size=x_coords.nbytes)
+            y_shm = shared_memory.SharedMemory(create=True, size=y_coords.nbytes)
+            z_shm = shared_memory.SharedMemory(create=True, size=z_coords.nbytes)
+            mass_shm = shared_memory.SharedMemory(create=True, size=mass_array.nbytes)
+            
+            shared_memory_blocks = [x_shm, y_shm, z_shm, mass_shm]
+            
+            # Copy data to shared memory
+            x_shared = np.ndarray(x_coords.shape, dtype=np.float32, buffer=x_shm.buf)
+            y_shared = np.ndarray(y_coords.shape, dtype=np.float32, buffer=y_shm.buf)
+            z_shared = np.ndarray(z_coords.shape, dtype=np.float32, buffer=z_shm.buf)
+            mass_shared = np.ndarray(mass_array.shape, dtype=np.float32, buffer=mass_shm.buf)
+            
+            x_shared[:] = x_coords[:]
+            y_shared[:] = y_coords[:]
+            z_shared[:] = z_coords[:]
+            mass_shared[:] = mass_array[:]
+            
+            # Clear original arrays to save memory
+            del x_coords, y_coords, z_coords, mass_array
+            gc.collect()
+            
+            # Determine optimal number of processes
+            n_processes = self._get_optimal_n_processes(n_particles)
+            
+            print(f"CIC assignment: Using {n_processes} processes with shared memory for {n_particles:,} particles")
+            
+            # Create shared memory info dict
+            shared_info = {
+                'x_name': x_shm.name,
+                'y_name': y_shm.name,
+                'z_name': z_shm.name,
+                'mass_name': mass_shm.name,
+                'shape': (n_particles,)
+            }
+            
+            # Create chunk boundaries (indices only, not data)
+            chunk_size = n_particles // n_processes
+            worker_args = []
+            for i in range(n_processes):
+                start_idx = i * chunk_size
+                end_idx = (i + 1) * chunk_size if i < n_processes - 1 else n_particles
+                worker_args.append((shared_info, start_idx, end_idx, self.ngrid, self.box_size))
+            
+            # Process chunks in parallel using shared memory
+            with Pool(processes=n_processes) as pool:
+                chunk_grids = pool.map(_cic_worker_shared_memory, worker_args)
+            
+            # Sum all chunk grids
+            density_grid = np.sum(chunk_grids, axis=0).astype(np.float32)
+            
+            return density_grid
+            
+        finally:
+            # Clean up shared memory
+            for shm in shared_memory_blocks:
+                try:
+                    shm.close()
+                    shm.unlink()
+                except:
+                    pass
     
     def _cic_assignment_single_thread(self, grid_coords: np.ndarray, masses: np.ndarray) -> np.ndarray:
         """
@@ -555,7 +702,7 @@ class ParticleGridder:
             'x': grid_coords[:, 0] * self.grid_spacing,  # Convert back to physical coordinates
             'y': grid_coords[:, 1] * self.grid_spacing,
             'z': grid_coords[:, 2] * self.grid_spacing,
-            'mass': masses
+            'mass': masses  # Use the unit masses passed in
         }
         
         # Determine optimal number of processes
@@ -775,7 +922,11 @@ class ParticleGridder:
         x_grid = np.asarray(particles['x']) / self.grid_spacing
         y_grid = np.asarray(particles['y']) / self.grid_spacing
         z_grid = np.asarray(particles['z']) / self.grid_spacing
-        masses = np.asarray(particles['mass'])
+        # Use unit masses if mass not provided (equal-mass particles)
+        if 'mass' in particles:
+            masses = np.asarray(particles['mass'])
+        else:
+            masses = np.ones(len(particles['x']), dtype=np.float32)
         
         # Apply periodic boundary conditions (use NumPy operations)
         x_grid = np.mod(x_grid, ngrid)
@@ -970,7 +1121,7 @@ class ParticleGridder:
             
             try:
                 # Put particle arrays in shared memory
-                for key in ['x', 'y', 'z', 'mass']:
+                for key in ['x', 'y', 'z']:
                     arr = particles[key].astype(np.float32)  # Ensure float32
                     shm = shared_memory.SharedMemory(create=True, size=arr.nbytes)
                     shared_arr = np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)
@@ -1121,7 +1272,8 @@ def _cic_slab_shared_worker_optimized(particle_shm_names, n_particles, start_idx
             x_chunk = particle_arrays['x'][start_idx:end_idx]
             y_chunk = particle_arrays['y'][start_idx:end_idx] 
             z_chunk = particle_arrays['z'][start_idx:end_idx]
-            mass_chunk = particle_arrays['mass'][start_idx:end_idx]
+            # Create unit mass array (no mass field needed for gridding)
+            mass_chunk = np.ones(len(x_chunk), dtype=np.float32)
             
             # Convert particle positions to grid coordinates
             grid_spacing = box_size / ngrid
