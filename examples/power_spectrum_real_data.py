@@ -184,28 +184,37 @@ def generate_synthetic_particle_data(process_id=0):
     
     if process_id == 0:
         print(f"Generating {n_particles_per_process:,} synthetic particles per process")
-        print("Particle positions: random float32 in [0, 1]")
+        print(f"Particle positions: random float32 in [0, {1050.0}] (box_size)")
     
     import time
     start_time = time.time()
     
-    # Generate random particle positions in [0, 1] as float32
-    # This matches the memory footprint of the real data exactly
-    np.random.seed(42 + process_id)  # Reproducible but different per process
-    
-    particles_rec = np.zeros(n_particles_per_process, dtype=[
-        ('x', 'f4'), ('y', 'f4'), ('z', 'f4')
-    ])
-    
-    particles_rec['x'] = np.random.uniform(0.0, 1.0, n_particles_per_process).astype(np.float32)
-    particles_rec['y'] = np.random.uniform(0.0, 1.0, n_particles_per_process).astype(np.float32) 
-    particles_rec['z'] = np.random.uniform(0.0, 1.0, n_particles_per_process).astype(np.float32)
-    
-    # Create the same data structure as real data loading
-    result = {'box0': particles_rec}
-    
     # Use same box size as real simulation
     box_size = 1050.0
+    
+    # Generate random particle positions in [0, box_size] as float32
+    # MEMORY OPTIMIZATION: Create separate arrays directly instead of structured array
+    np.random.seed(42 + process_id)  # Reproducible but different per process
+    
+    # Create separate arrays directly (avoids memory doubling during extraction)
+    # CRITICAL FIX: Ensure coordinates are strictly < box_size for validation
+    # Use (1.0 - epsilon) to guarantee max value < box_size
+    scale_factor = box_size * (1.0 - 1e-6)  # Slightly less than box_size
+    x_data = (np.random.uniform(0.0, 1.0, n_particles_per_process) * scale_factor).astype(np.float32)
+    y_data = (np.random.uniform(0.0, 1.0, n_particles_per_process) * scale_factor).astype(np.float32)
+    z_data = (np.random.uniform(0.0, 1.0, n_particles_per_process) * scale_factor).astype(np.float32)
+    
+    # Create the particle dictionary format directly (no structured array)
+    particles_dict = {
+        'x': x_data,
+        'y': y_data, 
+        'z': z_data
+    }
+    
+    # Create the same data structure as real data loading
+    result = {'box0': particles_dict}
+    
+    # Use same box size as real simulation
     
     # Mock simulation parameters
     sim_params = {
@@ -255,68 +264,106 @@ def calculate_power_spectrum(particles_or_data, box_size, ngrid=512, assignment=
         # Convert first box to particle dictionary format
         particles_rec = list(particles_or_data.values())[0]
         
-        # MEMORY OPTIMIZATION: Extract only position fields (no mass, no velocity)
-        # MEMORY DEBUG: Check if each process loads full dataset vs distributed loading
-        import psutil
+        # Check if data is already in dictionary format (synthetic) or structured array (real)
+        if isinstance(particles_rec, dict):
+            # Synthetic data - already in correct format
+            print(f"DEBUG: Using synthetic data - already in dictionary format")
+            data_input = particles_rec
+            
+            # Memory debug for synthetic data
+            import psutil
+            import os
+            process = psutil.Process()
+            process_id = int(os.environ.get('SLURM_PROCID', '0'))
+            memory_current = process.memory_info().rss / 1024**3
+            n_particles = len(data_input['x'])
+            expected_memory_gb = n_particles * 3 * 4 / 1024**3  # 3 fields × 4 bytes
+            print(f"DEBUG: PROCESS {process_id}: synthetic data: {n_particles:,} particles")
+            print(f"DEBUG: PROCESS {process_id}: memory: {memory_current:.2f} GB, expected: {expected_memory_gb:.2f} GB")
+            
+            # DEBUG: Print coordinate ranges to verify scaling
+            import numpy as np
+            print(f"DEBUG: PROCESS {process_id}: x range: [{np.min(data_input['x']):.3f}, {np.max(data_input['x']):.3f}]")
+            print(f"DEBUG: PROCESS {process_id}: y range: [{np.min(data_input['y']):.3f}, {np.max(data_input['y']):.3f}]") 
+            print(f"DEBUG: PROCESS {process_id}: z range: [{np.min(data_input['z']):.3f}, {np.max(data_input['z']):.3f}]")
+            
+        else:
+            # Real data - structured array format, need to extract fields
+            print(f"DEBUG: Using real data - extracting from structured array")
+            
+            # MEMORY OPTIMIZATION: Extract only position fields (no mass, no velocity)
+            # MEMORY DEBUG: Check if each process loads full dataset vs distributed loading
+            import psutil
+            import os
+            process = psutil.Process()
+            memory_before_extraction = process.memory_info().rss / 1024**3
+            
+            n_particles_loaded = len(particles_rec)
+            expected_memory_gb = n_particles_loaded * 6 * 4 / 1024**3  # 6 fields × 4 bytes (original TPS)
+            process_id = int(os.environ.get('SLURM_PROCID', '0'))
+            
+            print(f"DEBUG: PROCESS {process_id}: particles_rec type: {type(particles_rec)}")
+            print(f"DEBUG: PROCESS {process_id}: particles_rec dtype: {particles_rec.dtype}")
+            print(f"DEBUG: PROCESS {process_id}: particles_rec shape: {particles_rec.shape}")
+            print(f"DEBUG: PROCESS {process_id}: loaded {n_particles_loaded:,} particles")
+            print(f"DEBUG: PROCESS {process_id}: expected memory: {expected_memory_gb:.2f} GB")
+            print(f"DEBUG: PROCESS {process_id}: actual memory before extraction: {memory_before_extraction:.2f} GB")
+            
+            try:
+                # MEMORY OPTIMIZATION: Extract fields progressively to minimize peak memory
+                # Extract one field at a time and immediately free original references
+                print(f"DEBUG: Extracting x field...")
+                x_data = particles_rec['x'].copy()  # Independent copy of x field
+                
+                print(f"DEBUG: Extracting y field...")
+                y_data = particles_rec['y'].copy()  # Independent copy of y field
+                
+                print(f"DEBUG: Extracting z field...")
+                z_data = particles_rec['z'].copy()  # Independent copy of z field
+                
+                # Now that we have independent copies, free all original references
+                print(f"DEBUG: Freeing original structured array and dictionary")
+                del particles_rec
+                del particles_or_data  # CRITICAL: This holds the reference in result['box0']!
+                import gc
+                gc.collect()  # Force garbage collection to free memory immediately
+                
+                # Check memory after cleanup - should be ~12 bytes/particle (3 fields × 4 bytes)
+                memory_after_cleanup = process.memory_info().rss / 1024**3
+                n_particles_final = len(x_data)
+                expected_final_memory_gb = n_particles_final * 3 * 4 / 1024**3  # 3 fields × 4 bytes
+                print(f"DEBUG: PROCESS {process_id}: memory after cleanup: {memory_after_cleanup:.2f} GB")
+                print(f"DEBUG: PROCESS {process_id}: expected final memory: {expected_final_memory_gb:.2f} GB")
+                print(f"DEBUG: PROCESS {process_id}: memory reduction: {memory_before_extraction - memory_after_cleanup:.2f} GB")
+                
+                # Create the data dictionary
+                data_input = {
+                    'x': x_data,
+                    'y': y_data,
+                    'z': z_data
+                }
+            
+            except Exception as e:
+                print(f"ERROR during particle data extraction: {e}")
+                raise
+        
+        # Validate final data format
+        if not isinstance(data_input, dict) or 'x' not in data_input:
+            raise ValueError(f"Invalid data format after processing: {type(data_input)}")
+            
+        # DEBUG: Print coordinate ranges for all data types (synthetic and real)
         import os
-        process = psutil.Process()
-        memory_before_extraction = process.memory_info().rss / 1024**3
-        
-        n_particles_loaded = len(particles_rec)
-        expected_memory_gb = n_particles_loaded * 6 * 4 / 1024**3  # 6 fields × 4 bytes (original TPS)
         process_id = int(os.environ.get('SLURM_PROCID', '0'))
-        
-        print(f"DEBUG: PROCESS {process_id}: particles_rec type: {type(particles_rec)}")
-        print(f"DEBUG: PROCESS {process_id}: particles_rec dtype: {particles_rec.dtype}")
-        print(f"DEBUG: PROCESS {process_id}: particles_rec shape: {particles_rec.shape}")
-        print(f"DEBUG: PROCESS {process_id}: loaded {n_particles_loaded:,} particles")
-        print(f"DEBUG: PROCESS {process_id}: expected memory: {expected_memory_gb:.2f} GB")
-        print(f"DEBUG: PROCESS {process_id}: actual memory before extraction: {memory_before_extraction:.2f} GB")
-        
-        try:
-            # MEMORY OPTIMIZATION: Extract fields one at a time and immediately free memory
-            print(f"DEBUG: Converting x field...")
-            x_data = np.array(particles_rec['x'], dtype=np.float32)
-            print(f"DEBUG: Converting y field...")
-            y_data = np.array(particles_rec['y'], dtype=np.float32)
-            print(f"DEBUG: Converting z field...")
-            z_data = np.array(particles_rec['z'], dtype=np.float32)
+        import numpy as np
+        print(f"DEBUG: PROCESS {process_id}: FINAL coordinate ranges:")
+        print(f"DEBUG: PROCESS {process_id}: x range: [{np.min(data_input['x']):.3f}, {np.max(data_input['x']):.3f}]")
+        print(f"DEBUG: PROCESS {process_id}: y range: [{np.min(data_input['y']):.3f}, {np.max(data_input['y']):.3f}]") 
+        print(f"DEBUG: PROCESS {process_id}: z range: [{np.min(data_input['z']):.3f}, {np.max(data_input['z']):.3f}]")
+        print(f"DEBUG: PROCESS {process_id}: Box size: {box_size:.1f}")
             
-            # MEMORY OPTIMIZATION: Immediately delete ALL references to original array
-            # Delete both the local variable AND the dictionary that holds the reference
-            print(f"DEBUG: Freeing original particles_rec array (contains velocity+mass fields)")
-            del particles_rec
-            del particles_or_data  # CRITICAL: This holds the reference in result['box0']!
-            import gc
-            gc.collect()  # Force garbage collection to free memory immediately
-            
-            # Check memory after cleanup - should be ~12 bytes/particle (3 fields × 4 bytes)
-            memory_after_cleanup = process.memory_info().rss / 1024**3
-            n_particles_final = len(x_data)
-            expected_final_memory_gb = n_particles_final * 3 * 4 / 1024**3  # 3 fields × 4 bytes
-            print(f"DEBUG: PROCESS {process_id}: memory after cleanup: {memory_after_cleanup:.2f} GB")
-            print(f"DEBUG: PROCESS {process_id}: expected final memory: {expected_final_memory_gb:.2f} GB")
-            print(f"DEBUG: PROCESS {process_id}: memory reduction: {memory_before_extraction - memory_after_cleanup:.2f} GB")
-            
-            # MEMORY OPTIMIZATION: Do NOT create mass array - gridding doesn't need it
-            # Original code created unnecessary 2.67 GB mass array that was immediately discarded
-            n_particles = len(x_data)
-            print(f"DEBUG: Skipping mass array creation - not needed for gridding ({n_particles:,} particles)")
-            
-            data_input = {
-                'x': x_data,
-                'y': y_data, 
-                'z': z_data
-                # 'mass': REMOVED - not needed for CIC gridding, saves 2.67 GB
-            }
-            print(f"Converting snapshot data: {len(data_input['x']):,} particles")
-            print(f"DEBUG: data_input keys: {list(data_input.keys())}")
-            print(f"DEBUG: data_input['x'] type: {type(data_input['x'])}")
-        except Exception as e:
-            print(f"ERROR in particle conversion: {e}")
-            import traceback
-            traceback.print_exc()
-            raise
+        print(f"Converting snapshot data: {len(data_input['x']):,} particles")
+        print(f"DEBUG: data_input keys: {list(data_input.keys())}")
+        print(f"DEBUG: data_input['x'] type: {type(data_input['x'])}")
     else:
         raise ValueError(f"Unexpected data format: {type(particles_or_data)}")
     

@@ -254,9 +254,17 @@ class PowerSpectrumCalculator:
         process_id = int(os.environ.get('SLURM_PROCID', '0'))
         n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
         
+        # Initialize MPI communicator
+        try:
+            from mpi4py import MPI
+            comm = MPI.COMM_WORLD
+        except ImportError:
+            raise ImportError("MPI4py required for distributed mode but not available")
+        
         # Step 1: Redistribute particles based on spatial decomposition using MPI4py
+        grid_shape = (self.ngrid, self.ngrid, self.ngrid)
         spatial_particles, y_min, y_max, base_y_min, base_y_max = redistribute_particles_mpi(
-            particles, assignment, self.ngrid, self.box_size
+            particles, grid_shape, self.box_size, comm
         )
         
         # Get process info without JAX (use SLURM environment)
@@ -267,19 +275,13 @@ class PowerSpectrumCalculator:
         # Calculate and store global particle count for density diagnostics
         local_particle_count = len(spatial_particles['x'])
         
-        # Use MPI to calculate global particle count (more reliable than JAX collective)
-        try:
-            from mpi4py import MPI
-            comm = MPI.COMM_WORLD
-            self._global_total_particles = comm.allreduce(local_particle_count, op=MPI.SUM)
-            print(f"Process {process_id}: Global particle count (MPI): {self._global_total_particles}, local: {local_particle_count}", flush=True)
-        except ImportError:
-            # Fallback: estimate from local count and process count
-            self._global_total_particles = local_particle_count * n_processes
-            print(f"Process {process_id}: Estimated global particle count: {self._global_total_particles}, local: {local_particle_count}", flush=True)
+        # Use MPI to calculate global particle count (comm already initialized above)
+        self._global_total_particles = comm.allreduce(local_particle_count, op=MPI.SUM)
+        print(f"Process {process_id}: Global particle count (MPI): {self._global_total_particles}, local: {local_particle_count}", flush=True)
             
         # Step 2: Create spatial slab grid (not full grid)
-        slab_height = base_y_max - base_y_min
+        # slab_height should be in grid cells, not physical coordinates
+        slab_height = int(base_y_max - base_y_min)
         
         print(f"Process {process_id}: About to start gridding to slab {self.ngrid}x{slab_height}x{self.ngrid}", flush=True)
         
@@ -556,7 +558,7 @@ class PowerSpectrumCalculator:
         density_grid /= mean_density
         density_grid -= 1.0  # Now density_grid contains delta field in-place
         
-        # Store diagnostics
+        # Store diagnostics (density_grid now contains delta field in-place)
         self._store_density_diagnostics(density_grid, density_grid, total_particles)
         
         # Continue with standard power spectrum calculation
@@ -996,15 +998,51 @@ def redistribute_particles_mpi(particles, grid_shape, box_size, comm):
     
     # Only process x, y, z fields (REMOVE MASS to save 10.16 GB)
     field_keys = ['x', 'y', 'z']
+    
+    # Calculate theoretical memory requirements
+    total_particles = len(particles['x'])
+    bytes_per_particle = len(field_keys) * 4  # 3 fields × 4 bytes
+    original_data_size_gb = total_particles * bytes_per_particle / (1024**3)
+    print(f"🔍 MPI RANK {rank}: PACKING DEBUG - Original data: {total_particles:,} particles, {original_data_size_gb:.2f} GB", flush=True)
+    
     particles_by_dest = {dest_rank: {key: [] for key in field_keys} for dest_rank in range(size)}
     
+    # Track memory growth for each destination
     for dest_rank in range(size):
+        memory_before_dest = get_memory_usage()
         mask = (dest_ranks == dest_rank)
         n_dest = np.sum(mask)
         
         if n_dest > 0:
+            # Calculate expected memory for this destination
+            expected_dest_size_gb = n_dest * bytes_per_particle / (1024**3)
+            print(f"🔍 MPI RANK {rank}: PACKING dest {dest_rank}: {n_dest:,} particles, expected {expected_dest_size_gb:.2f} GB", flush=True)
+            
             for key in field_keys:
                 particles_by_dest[dest_rank][key] = particles[key][mask].copy()
+            
+            memory_after_dest = get_memory_usage()
+            actual_dest_overhead = memory_after_dest - memory_before_dest
+            print(f"🔍 MPI RANK {rank}: PACKING dest {dest_rank}: actual overhead {actual_dest_overhead:.2f} GB (expected {expected_dest_size_gb:.2f} GB)", flush=True)
+        else:
+            # Ensure empty arrays are proper numpy arrays, not lists
+            for key in field_keys:
+                particles_by_dest[dest_rank][key] = np.array([], dtype=np.float32)
+            print(f"🔍 MPI RANK {rank}: PACKING dest {dest_rank}: 0 particles (empty)", flush=True)
+    
+    # Check if original particles arrays are still in memory
+    memory_before_cleanup = get_memory_usage()
+    print(f"🔍 MPI RANK {rank}: PACKING complete, before cleanup: {memory_before_cleanup:.2f} GB", flush=True)
+    
+    # Calculate total size of particles_by_dest
+    total_packed_particles = 0
+    for dest_rank in range(size):
+        for key in field_keys:
+            if len(particles_by_dest[dest_rank][key]) > 0:
+                total_packed_particles += len(particles_by_dest[dest_rank][key])
+    
+    expected_packed_size_gb = total_packed_particles * 4 / (1024**3)  # Only counting one field to avoid triple-counting
+    print(f"🔍 MPI RANK {rank}: PACKING total packed particles: {total_packed_particles:,} (should be {total_particles * len(field_keys):,})", flush=True)
     
     # Cleanup destination calculation arrays
     del dest_ranks
@@ -1013,6 +1051,48 @@ def redistribute_particles_mpi(particles, grid_shape, box_size, comm):
     memory_after_pack = get_memory_usage()
     pack_overhead = memory_after_pack - memory_before_pack
     print(f"🔍 MPI RANK {rank}: After particle packing: {memory_after_pack:.2f} GB (+{pack_overhead:.2f} GB)", flush=True)
+    
+    # Check if we still have the original particles arrays
+    try:
+        original_still_exists = len(particles['x']) > 0
+        print(f"🔍 MPI RANK {rank}: PACKING LEAK CHECK - Original particles still in memory: {original_still_exists}", flush=True)
+    except:
+        print(f"🔍 MPI RANK {rank}: PACKING LEAK CHECK - Original particles deleted", flush=True)
+    
+    # CRITICAL MEMORY OPTIMIZATION: Delete original particles after packing
+    # The original particles dictionary is no longer needed since all data is now in particles_by_dest
+    memory_before_del_original = get_memory_usage()
+    print(f"🔍 MPI RANK {rank}: PACKING attempting to free original particles dictionary", flush=True)
+    
+    # Check current memory references to particles
+    for key in ['x', 'y', 'z']:
+        if key in particles:
+            particles_size_gb = len(particles[key]) * 4 / (1024**3)
+            print(f"🔍 MPI RANK {rank}: Original particles['{key}'] size: {particles_size_gb:.2f} GB", flush=True)
+    
+    # AGGRESSIVE MEMORY CLEANUP: Delete individual arrays first, then dictionary
+    for key in list(particles.keys()):
+        del particles[key]
+    del particles
+    
+    # Force multiple garbage collection cycles
+    import gc
+    for _ in range(3):
+        gc.collect()
+    
+    # Additional cleanup - clear any cached references
+    try:
+        import sys
+        sys.modules[__name__].__dict__.pop('particles', None)
+    except:
+        pass
+    
+    memory_after_del_original = get_memory_usage()
+    freed_memory = memory_before_del_original - memory_after_del_original
+    print(f"🔍 MPI RANK {rank}: AGGRESSIVE CLEANUP: {freed_memory:.2f} GB freed (memory now {memory_after_del_original:.2f} GB)", flush=True)
+    
+    if freed_memory < 5.0:
+        print(f"🚨 MPI RANK {rank}: WARNING - Only {freed_memory:.2f} GB freed, expected ~8GB. Memory leak detected!", flush=True)
     
     # Phase 3: MPI Communication with streaming receives
     memory_before_comm = get_memory_usage()
@@ -1049,7 +1129,9 @@ def redistribute_particles_mpi(particles, grid_shape, box_size, comm):
         # Stream chunks directly into pre-allocated arrays
         particles_received = 0
         for chunk_idx in range(n_chunks):
-            chunk_data = comm.recv(source=source_rank, tag=200 + chunk_idx)
+            # Use same safe tag calculation as sender
+            tag = (200 + chunk_idx) % 30000
+            chunk_data = comm.recv(source=source_rank, tag=tag)
             chunk_size = len(chunk_data['x'])
             
             # Copy directly into final arrays (no temporary storage)
@@ -1094,46 +1176,93 @@ def redistribute_particles_mpi(particles, grid_shape, box_size, comm):
                 comm.send(metadata, dest=dest_rank, tag=100)
                 
                 # Send particles in chunks
-                max_chunk_size_gb = 2.0
+                max_chunk_size_gb = 1.0  # Reduce chunk size to avoid MPI limits
                 bytes_per_particle = len(field_keys) * 4
                 max_chunk_particles = int((max_chunk_size_gb * 1024**3) / bytes_per_particle)
                 
                 n_chunks = (n_to_send + max_chunk_particles - 1) // max_chunk_particles
+                print(f"🔍 SEND RANK {rank} → {dest_rank}: Sending {n_to_send:,} particles in {n_chunks} chunks", flush=True)
                 
                 for chunk_idx in range(n_chunks):
                     start_idx = chunk_idx * max_chunk_particles
                     end_idx = min(start_idx + max_chunk_particles, n_to_send)
                     
                     chunk_data = {}
+                    chunk_memory_bytes = 0
                     for key in field_keys:
-                        chunk_data[key] = particles_to_send[key][start_idx:end_idx]
+                        chunk_array = particles_to_send[key][start_idx:end_idx]
+                        # Ensure chunk data is contiguous numpy array for MPI
+                        if not chunk_array.flags.c_contiguous:
+                            chunk_array = np.ascontiguousarray(chunk_array)
+                        chunk_data[key] = chunk_array
+                        chunk_memory_bytes += chunk_array.nbytes
                     
-                    req = comm.isend(chunk_data, dest=dest_rank, tag=200 + chunk_idx)
-                    send_requests.append(req)
+                    # Validate chunk data before sending
+                    chunk_size = len(chunk_data['x'])
+                    if chunk_size == 0:
+                        print(f"WARNING: Empty chunk {chunk_idx} for dest {dest_rank}", flush=True)
+                        continue
+                    
+                    # Use safe tag calculation (modulo to avoid overflow)
+                    tag = (200 + chunk_idx) % 30000  # Safe MPI tag range
+                    chunk_mb = chunk_memory_bytes / (1024**2)
+                    
+                    print(f"🔍 SEND RANK {rank} → {dest_rank}: Chunk {chunk_idx}: {chunk_size:,} particles ({chunk_mb:.1f} MB), tag={tag}", flush=True)
+                    
+                    try:
+                        req = comm.isend(chunk_data, dest=dest_rank, tag=tag)
+                        send_requests.append(req)
+                        print(f"✅ SEND RANK {rank} → {dest_rank}: Chunk {chunk_idx} sent successfully", flush=True)
+                    except Exception as e:
+                        print(f"❌ SEND RANK {rank} → {dest_rank}: Failed to send chunk {chunk_idx}: {e}", flush=True)
+                        print(f"   Chunk details: size={chunk_size}, memory={chunk_mb:.1f}MB, tag={tag}", flush=True)
+                        raise
                     
                     # Clean up chunk data immediately after sending
                     del chunk_data
+                
+                # IMMEDIATE MEMORY CLEANUP: Free particles_by_dest for this destination after sending
+                memory_before_dest_cleanup = get_memory_usage()
+                for key in field_keys:
+                    particles_by_dest[dest_rank][key] = None
+                del particles_by_dest[dest_rank]
+                gc.collect()
+                
+                memory_after_dest_cleanup = get_memory_usage()
+                freed_dest_memory = memory_before_dest_cleanup - memory_after_dest_cleanup
+                print(f"🔍 SEND RANK {rank} → {dest_rank}: FREED destination particles: {freed_dest_memory:.2f} GB", flush=True)
             else:
                 # Send empty metadata
                 metadata = {'n_particles': 0}
                 comm.send(metadata, dest=dest_rank, tag=100)
+                
+                # Clean up empty destination immediately
+                del particles_by_dest[dest_rank]
     
     # Receive particles from other ranks using streaming approach
     for source_rank in range(size):
         if source_rank != rank:
+            memory_before_receive = get_memory_usage()
             received_particles = chunked_mpi_recv(source_rank, comm)
             
             memory_after_receive = get_memory_usage()
             received_memory = sum(arr.nbytes for arr in received_particles.values()) / (1024**3)
             print(f"🔍 MPI RANK {rank}: After receiving from rank {source_rank}: {memory_after_receive:.2f} GB (+{received_memory:.2f} GB)", flush=True)
             
-            # Append to redistributed_particles
+            # MEMORY OPTIMIZATION: Append to redistributed_particles and immediately free received_particles
             for key in field_keys:
                 if len(received_particles[key]) > 0:
                     redistributed_particles[key].append(received_particles[key])
+                    # Clear the reference in received_particles to avoid double storage
+                    received_particles[key] = None
+            
+            # Force cleanup of received_particles dictionary
+            del received_particles
+            gc.collect()
             
             memory_after_append = get_memory_usage()
-            print(f"🔍 MPI RANK {rank}: After appending particles from rank {source_rank}: {memory_after_append:.2f} GB", flush=True)
+            freed_memory = memory_after_receive - memory_after_append
+            print(f"🔍 MPI RANK {rank}: After appending+cleanup from rank {source_rank}: {memory_after_append:.2f} GB (-{freed_memory:.2f} GB freed)", flush=True)
     
     # Add local particles (particles that stay on this rank)
     local_particles = particles_by_dest[rank]
@@ -1143,16 +1272,18 @@ def redistribute_particles_mpi(particles, grid_shape, box_size, comm):
     
     # Phase 4: Clean up particles_by_dest before final concatenation
     memory_before_final_cleanup = get_memory_usage()
-    print(f"🔍 MPI RANK {rank}: waiting for {len(send_requests)} send operations to complete", flush=True)
     
-    # Wait for all sends to complete
-    if send_requests:
-        from mpi4py.MPI import Request
-        Request.waitall(send_requests)
+    # DEADLOCK FIX: Let MPI handle send completion automatically
+    # All receives are complete, so sends will finish when buffers are available
+    print(f"🔍 MPI RANK {rank}: All receives complete, letting MPI handle send completion", flush=True)
+    
+    # Add a barrier to ensure all processes have completed their communication
+    comm.barrier()
+    print(f"🔍 MPI RANK {rank}: MPI Barrier complete - all communication finished", flush=True)
     
     # MEMORY FIX: Aggressive cleanup of particles_by_dest
-    for dest_rank in particles_by_dest:
-        for key in particles_by_dest[dest_rank]:
+    for dest_rank in list(particles_by_dest.keys()):
+        for key in list(particles_by_dest[dest_rank].keys()):
             if particles_by_dest[dest_rank][key] is not None:
                 del particles_by_dest[dest_rank][key]
         particles_by_dest[dest_rank].clear()
@@ -1216,7 +1347,10 @@ def redistribute_particles_mpi(particles, grid_shape, box_size, comm):
     n_final = len(final_particles['x'])
     print(f"🔍 MPI RANK {rank}: REDISTRIBUTION COMPLETE - {n_final} particles, memory: {memory_end:.2f} GB (+{total_overhead:.2f} GB total)", flush=True)
     
-    return final_particles
+    # Return spatial domain boundaries along with particles
+    base_y_min = 0.0
+    base_y_max = box_size
+    return final_particles, y_min, y_max, base_y_min, base_y_max
 
 
 
