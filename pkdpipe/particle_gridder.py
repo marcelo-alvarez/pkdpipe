@@ -1093,7 +1093,7 @@ class ParticleGridder:
             
             # Create shared memory array for the result grid
             grid_shape = (ngrid, slab_height, ngrid)
-            grid_size = np.prod(grid_shape)
+            grid_size = int(np.prod(grid_shape))  # Convert to int for SharedMemory
             
             # MEMORY OPTIMIZATION: Limit number of processes for high particle counts
             # to prevent memory explosion
