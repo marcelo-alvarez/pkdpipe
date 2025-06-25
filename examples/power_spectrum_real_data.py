@@ -336,6 +336,14 @@ def calculate_power_spectrum(particles_or_data, box_size, ngrid=512, assignment=
                 print(f"DEBUG: PROCESS {process_id}: expected final memory: {expected_final_memory_gb:.2f} GB")
                 print(f"DEBUG: PROCESS {process_id}: memory reduction: {memory_before_extraction - memory_after_cleanup:.2f} GB")
                 
+                # CRITICAL FIX: Scale coordinates from [0,1] normalized to [0,box_size) physical units
+                # Ensure coordinates are strictly < box_size to pass validation
+                print(f"DEBUG: Scaling coordinates from [0,1] to [0,{box_size}) physical units")
+                scale_factor = box_size * (1.0 - 1e-6)  # Slightly less than box_size to avoid boundary issues
+                x_data *= scale_factor
+                y_data *= scale_factor  
+                z_data *= scale_factor
+                
                 # Create the data dictionary
                 data_input = {
                     'x': x_data,
