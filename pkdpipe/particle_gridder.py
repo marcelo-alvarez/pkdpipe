@@ -915,7 +915,7 @@ class ParticleGridder:
         """
         Single-threaded slab assignment - used for small particle counts.
         """
-        slab_height = y_max - y_min
+        slab_height = int(y_max - y_min)
         slab_grid = np.zeros((ngrid, slab_height, ngrid), dtype=np.float32)
         
         # Convert particle positions to grid coordinates (ensure NumPy arrays)
