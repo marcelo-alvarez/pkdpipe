@@ -10,8 +10,10 @@ Example usage:
     calculator = PowerSpectrumCalculator(ngrid=256, box_size=1000.0)
     k_bins, power, n_modes = calculator.calculate_power_spectrum(particles)
     
-    # Multi-GPU calculation with 4 devices
-    calculator = PowerSpectrumCalculator(ngrid=512, box_size=2000.0, n_devices=4)
+    # Multi-GPU calculation with 4 devices and window correction enabled
+    calculator = PowerSpectrumCalculator(
+        ngrid=512, box_size=2000.0, n_devices=4, apply_window_correction=True
+    )
     k_bins, power, n_modes = calculator.calculate_power_spectrum(
         particles, subtract_shot_noise=True, assignment='cic'
     )
@@ -118,16 +120,21 @@ class PowerSpectrumCalculator:
     Multi-GPU power spectrum calculator using JAX FFT.
     
     Provides clean API for computing power spectra from particle distributions
-    with proper shot noise handling, k-binning, and window function corrections.
+    with proper shot noise handling, k-binning, and optional window function corrections.
     
     This calculator supports three execution modes:
     1. Single device (GPU/CPU) - for small simulations
     2. Multi-GPU within single process - for medium simulations
     3. Distributed multi-process - for large simulations with srun/mpirun
+    
+    Window function correction is disabled by default (apply_window_correction=False)
+    since it can introduce high-k noise amplification near the Nyquist frequency.
+    Enable only when specific applications require aliasing corrections.
     """
     
     def __init__(self, ngrid: int, box_size: float, n_devices: int = 1,
-                     k_bins: Optional[np.ndarray] = None):
+                     k_bins: Optional[np.ndarray] = None,
+                     apply_window_correction: bool = False):
             """
             Initialize power spectrum calculator.
             
@@ -136,6 +143,8 @@ class PowerSpectrumCalculator:
                 box_size: Simulation box size in Mpc/h
                 n_devices: Number of GPUs to use (single-process mode)
                 k_bins: Custom k-binning array (default: logarithmic)
+                apply_window_correction: Whether to apply window function correction
+                    (default: False, recommended for most applications)
                 
             Raises:
                 ValueError: If parameters are invalid
@@ -151,6 +160,7 @@ class PowerSpectrumCalculator:
             self.ngrid = ngrid
             self.box_size = box_size  
             self.n_devices = n_devices
+            self.apply_window_correction = apply_window_correction
             self.fundamental_mode = 2 * np.pi / box_size
             self.volume = box_size**3
             self.cell_volume = self.volume / ngrid**3
@@ -168,7 +178,6 @@ class PowerSpectrumCalculator:
             is_distributed = n_processes > 1  # Infer distributed mode from SLURM
             
             # DEBUG: Print k-bin edges for comparison
-            print(f"DEBUG k-bins (process {process_id}): {len(self.k_bins)} edges = {self.k_bins}")
             
             if process_id == 0:
                 print(f"PowerSpectrumCalculator initialized:")
@@ -177,6 +186,7 @@ class PowerSpectrumCalculator:
                 print(f"  Cell size: {box_size/ngrid:.3f} Mpc/h")
                 print(f"  k-bins: {len(self.k_bins)-1}")
                 print(f"  k-range: {self.k_bins[0]:.6f} to {self.k_bins[-1]:.6f} h/Mpc")
+                print(f"  Window correction: {'ENABLED' if apply_window_correction else 'DISABLED'}")
                 if is_distributed:
                     print(f"  JAX Distributed Mode: ENABLED ({n_processes} processes)")
                     print(f"  JAX will be initialized after multiprocessing is complete")
@@ -205,34 +215,26 @@ class PowerSpectrumCalculator:
         """
         # DEBUG: Track which processes enter the power spectrum calculation
         process_id = int(os.environ.get('SLURM_PROCID', '0'))
-        print(f"DEBUG: Process {process_id} ENTERED calculate_power_spectrum", flush=True)
         
         # Validate input
         self._validate_particles(particles)
-        print(f"DEBUG: Process {process_id} passed particle validation", flush=True)
         
         # Check execution mode using SLURM environment (no JAX needed yet)
         n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
         distributed_mode = n_processes > 1
-        print(f"DEBUG: Process {process_id} detected distributed_mode={distributed_mode}, n_processes={n_processes}", flush=True)
-        print(f"DEBUG: SLURM distributed mode = {distributed_mode} (SLURM_NTASKS={n_processes})", flush=True)
-        print(f"DEBUG: self.n_devices = {self.n_devices}", flush=True)
         
         if distributed_mode:
-            print("DEBUG: Taking DISTRIBUTED path", flush=True)
             # Create gridder for distributed mode
             from .particle_gridder import ParticleGridder
             gridder = ParticleGridder(self.ngrid, self.box_size, assignment)
             return self._calculate_distributed(
                 particles, gridder, subtract_shot_noise, assignment)
         elif self.n_devices > 1:
-            print("DEBUG: Taking MULTI_GPU path", flush=True)
             # Create gridder for multi-GPU mode
             from .particle_gridder import ParticleGridder
             gridder = ParticleGridder(self.ngrid, self.box_size, assignment)
             return self._calculate_multi_gpu(particles, gridder, subtract_shot_noise, assignment)
         else:
-            print("DEBUG: Taking SINGLE_DEVICE path", flush=True)
             # Create gridder for single device mode
             from .particle_gridder import ParticleGridder
             gridder = ParticleGridder(self.ngrid, self.box_size, assignment)
@@ -872,13 +874,11 @@ class PowerSpectrumCalculator:
             assignment: Mass assignment scheme ('cic' or 'ngp')
             
         Returns:
-            Tuple of (corrected 3D power spectrum, corrected k_grid)
+            Tuple of (corrected/uncorrected 3D power spectrum, corrected k_grid)
         """
-        print(f"DEBUG window correction: power_3d.shape = {power_3d.shape}, k_grid.shape = {k_grid.shape}", flush=True)
         
         # Check if shapes match - if not, create matching k_grid
         if power_3d.shape != k_grid.shape:
-            print(f"DEBUG: Shape mismatch detected, creating matching k_grid", flush=True)
             # Extract the actual slab dimensions from power_3d
             nx, ny_slab, nz_rfft = power_3d.shape
             
@@ -891,24 +891,25 @@ class PowerSpectrumCalculator:
             # Create 3D grid for the actual slab dimensions
             KX, KY, KZ = np.meshgrid(kx, ky, kz, indexing='ij')
             k_grid_corrected = np.sqrt(KX**2 + KY**2 + KZ**2)
-            print(f"DEBUG: Created corrected k_grid with shape {k_grid_corrected.shape}", flush=True)
             k_grid = k_grid_corrected
         
+        # Apply window correction only if enabled
+        if not self.apply_window_correction:
+            return power_3d, k_grid
+            
+        # Apply window function correction based on assignment scheme
         if assignment.lower() == 'cic':
-            window = self._cic_window_function(k_grid)
+            window_correction = self._cic_window_function(k_grid)
         elif assignment.lower() == 'ngp':
-            window = self._ngp_window_function(k_grid)
+            window_correction = self._ngp_window_function(k_grid)
         else:
-            # Unknown assignment scheme, no correction
+            # Unknown assignment scheme - skip correction
             return power_3d, k_grid
         
-        # Avoid division by zero
-        window_safe = np.where(window > 1e-10, window, 1.0)
+        # Apply correction (divide by window function squared)
+        power_3d_corrected = power_3d / (window_correction**2 + 1e-16)  # Add small epsilon to avoid division by zero
         
-        # Apply correction: P_corrected = P_measured / W²
-        power_corrected = power_3d / (window_safe**2)
-        
-        return power_corrected, k_grid
+        return power_3d_corrected, k_grid
     
     def _cic_window_function(self, k_grid: np.ndarray) -> np.ndarray:
         """
@@ -954,7 +955,6 @@ class PowerSpectrumCalculator:
         # Determine grid dimensions from input k_grid shape
         # This handles both full grid and slab decomposition cases
         nx, ny, nz_rfft = k_grid.shape
-        print(f"DEBUG NGP window: k_grid.shape = {k_grid.shape}, nx={nx}, ny={ny}, nz_rfft={nz_rfft}", flush=True)
         
         # Create frequency arrays matching the actual grid dimensions
         # For distributed mode, ny should be the slab height (e.g. 128), not full grid (512)
@@ -974,7 +974,6 @@ class PowerSpectrumCalculator:
         
         # NGP window function is product of sinc functions
         window = sinc_x * sinc_y * sinc_z
-        print(f"DEBUG NGP window: final window.shape = {window.shape}", flush=True)
         return window
     
     def _finalize_power_spectrum(self, k_binned: np.ndarray, power_binned: np.ndarray,
