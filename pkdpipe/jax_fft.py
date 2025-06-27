@@ -31,10 +31,33 @@ def fft(x_np, direction='r2c'):
         Local FFT result as NumPy array (converted back from JAX)
     """
     
-    # CRITICAL: Initialize JAX distributed mode exactly once, here at FFT time
-    # This is the ONLY place where JAX should be imported and initialized
+    # CRITICAL: Initialize JAX distributed mode FIRST, before any other JAX operations
+    slurm_ntasks = os.environ.get('SLURM_NTASKS')
+    if slurm_ntasks and int(slurm_ntasks) > 1:
+        # Initialize JAX distributed mode BEFORE importing JAX modules
+        print("Initializing JAX distributed mode in fft()...", flush=True)
+        
+        try:
+            import jax.distributed
+            
+            coordinator_address = os.environ.get('SLURM_STEP_NODELIST', 'localhost').split(',')[0]
+            # Clean up SLURM nodelist format
+            if '[' in coordinator_address:
+                coordinator_address = coordinator_address.split('[')[0] + coordinator_address.split('[')[1].split('-')[0].replace(']', '')
+            
+            jax.distributed.initialize(
+                coordinator_address=f"{coordinator_address}:63025",
+                num_processes=int(slurm_ntasks),
+                process_id=int(os.environ.get('SLURM_PROCID', 0))
+            )
+            print(f"JAX distributed initialized successfully", flush=True)
+            
+        except Exception as e:
+            print(f"JAX distributed initialization failed: {e}", flush=True)
+            raise RuntimeError("JAX distributed initialization failed - cannot proceed with distributed FFT") from e
+    
+    # NOW safe to import other JAX modules after distributed mode is set up
     try:
-        # Import JAX modules
         import jax
         from jax import jit
         from jax.experimental import mesh_utils
@@ -42,31 +65,7 @@ def fft(x_np, direction='r2c'):
         from jax.experimental.custom_partitioning import custom_partitioning
         from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
         
-        # Initialize JAX distributed mode if needed
-        slurm_ntasks = os.environ.get('SLURM_NTASKS')
-        if slurm_ntasks and int(slurm_ntasks) > 1:
-            try:
-                # Check if JAX distributed is already initialized
-                if jax.process_count() == 1:
-                    print("Initializing JAX distributed mode in fft()...", flush=True)
-                    
-                    # Initialize JAX distributed mode
-                    import jax.distributed
-                    coordinator_address = os.environ.get('SLURM_STEP_NODELIST', 'localhost').split(',')[0]
-                    # Clean up SLURM nodelist format
-                    if '[' in coordinator_address:
-                        coordinator_address = coordinator_address.split('[')[0] + coordinator_address.split('[')[1].split('-')[0].replace(']', '')
-                    
-                    jax.distributed.initialize(
-                        coordinator_address=f"{coordinator_address}:63025",
-                        num_processes=int(slurm_ntasks),
-                        process_id=int(os.environ.get('SLURM_PROCID', 0))
-                    )
-                    print(f"JAX distributed initialized: process {jax.process_index()}/{jax.process_count()}", flush=True)
-                else:
-                    print(f"JAX distributed already initialized: process {jax.process_index()}/{jax.process_count()}", flush=True)
-            except Exception as e:
-                print(f"JAX distributed initialization failed, continuing with single process: {e}", flush=True)
+        print(f"JAX modules imported successfully", flush=True)
         
         # Set JAX configuration to match main branch behavior
         jax.config.update("jax_enable_x64", False)  # Use 32-bit precision
@@ -111,28 +110,93 @@ def fft(x_np, direction='r2c'):
         func.def_partition(partition, infer_sharding_from_operands)
         return func
 
-    fft_XY = fft_partitioner(_fft_XY, P(None, None, "gpus"))
-    fft_Z = fft_partitioner(_fft_Z, P(None, None, "gpus"))
+    # CORRECTED sharding patterns based on working implementation
+    fft_XY = fft_partitioner(_fft_XY, P(None, None, "gpus"))  # Keep this for XY
+    fft_Z = fft_partitioner(_fft_Z, P(None, "gpus"))         # FIXED: Z-axis should be P(None, "gpus")
     ifft_XY = fft_partitioner(_ifft_XY, P(None, None, "gpus"))
-    ifft_Z = fft_partitioner(_ifft_Z, P(None, None, "gpus"))
+    ifft_Z = fft_partitioner(_ifft_Z, P(None, "gpus"))       # FIXED: Z-axis should be P(None, "gpus")
 
-    rfftn = lambda x: fft_Z(fft_XY(x))
-    irfftn = lambda x: ifft_XY(ifft_Z(x))
+    # CORRECTED order based on working implementation
+    def rfftn(x):
+        x = fft_Z(x)   # Z first
+        x = fft_XY(x)  # then XY
+        return x
+
+    def irfftn(x):
+        x = ifft_XY(x)  # XY first  
+        x = ifft_Z(x)   # then Z
+        return x
     
-    print(f"CRITICAL MEMORY TRANSFER: Converting NumPy density grid {x_np.shape} {x_np.dtype} from CPU to JAX arrays on GPU", flush=True)
-    print(f"Memory transfer size: {x_np.nbytes / (1024**3):.2f} GB", flush=True)
+    # Distributed FFT implementation based on working reference
+    if jax.process_count() > 1:
+        print(f"DISTRIBUTED MODE: Setting up sharded FFT with {jax.process_count()} processes", flush=True)
+        
+        # Calculate global shape: each process has a Y-slab, combine them
+        num_gpus = jax.process_count()
+        global_shape = (x_np.shape[0], x_np.shape[1] * num_gpus, x_np.shape[2])
+        print(f"Local slab shape: {x_np.shape}, Global shape: {global_shape}", flush=True)
+        
+        # Create mesh and sharding
+        devices = mesh_utils.create_device_mesh((num_gpus,))
+        mesh = Mesh(devices, axis_names=('gpus',))
+        print(f"JAX mesh created: {mesh}", flush=True)
+        
+        with mesh:
+            print(f"Converting local slab to JAX array (process {jax.process_index()})", flush=True)
+            x_single = jax.device_put(x_np).block_until_ready()
+            del x_np ; gc.collect()
+            
+            print(f"Creating sharded array from single-device arrays", flush=True)
+            # CRITICAL: Use make_array_from_single_device_arrays for proper distribution
+            xshard = jax.make_array_from_single_device_arrays(
+                global_shape,
+                NamedSharding(mesh, P(None, "gpus")),  # Shard along Y-axis (2nd dimension)
+                [x_single]
+            ).block_until_ready()
+            del x_single ; gc.collect()
+            print(f"Sharded array created: {xshard.sharding}", flush=True)
+            
+            # Set up JIT compilation with input shardings only, let JAX infer output
+            if direction == 'r2c':
+                print(f"Compiling sharded rFFT", flush=True)
+                rfftn_jit = jax.jit(
+                    rfftn,
+                    in_shardings=NamedSharding(mesh, P(None, "gpus"))
+                )
+            else:
+                print(f"Compiling sharded irFFT", flush=True)
+                irfftn_jit = jax.jit(
+                    irfftn,
+                    in_shardings=NamedSharding(mesh, P(None, "gpus"))
+                )
+            
+            from jax.experimental.multihost_utils import sync_global_devices
+            sync_global_devices("wait for compiler output")
+            
+            print(f"Starting sharded FFT computation (process {jax.process_index()}/{jax.process_count()})", flush=True)
+            with jax.spmd_mode('allow_all'):
+                if direction == 'r2c':
+                    out_jit = rfftn_jit(xshard).block_until_ready()
+                else:
+                    out_jit = irfftn_jit(xshard).block_until_ready()
+                sync_global_devices("FFT computation complete")
+                
+                # Extract local result
+                local_result = out_jit.addressable_data(0)
+                print(f"Sharded FFT complete, local result shape: {local_result.shape}", flush=True)
+                
+        return np.array(local_result)
     
-    # Simple JAX FFT - works for both single-process and distributed modes
-    # Each process handles its own data (slab in distributed mode, full grid in single-process mode)
-    x_jax = jax.device_put(x_np).block_until_ready()
-    print(f"NumPy→JAX conversion complete, freeing CPU array", flush=True)
-    del x_np ; gc.collect()
-    
-    print(f"Starting JAX FFT computation...", flush=True)
-    if direction=='r2c':
-        result = jax.numpy.fft.rfftn(x_jax)
     else:
-        result = jax.numpy.fft.irfftn(x_jax)
-    
-    print(f"JAX FFT complete, converting result back to NumPy", flush=True)
-    return np.array(result)
+        # Single process mode - simple implementation
+        print(f"SINGLE PROCESS MODE: Using standard JAX FFT", flush=True)
+        x_jax = jax.device_put(x_np).block_until_ready()
+        del x_np ; gc.collect()
+        
+        if direction == 'r2c':
+            result = jax.numpy.fft.rfftn(x_jax)
+        else:
+            result = jax.numpy.fft.irfftn(x_jax)
+        
+        print(f"Single-process FFT complete", flush=True)
+        return np.array(result)

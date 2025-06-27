@@ -570,7 +570,9 @@ class Data:
             if self.verbose and slurm_info['is_slurm']:
                 _log_info(f"DEBUG: Chunk size: {chunksize/1024**3:.1f} GB, particles per chunk: {count:,}")
         else:
+            # For non-tipsy formats (like lcp), read entire file in one chunk
             chunksize = 0
+            _log_info(f"Non-tipsy format ({format_info.get('name', 'unknown')}): will read entire file")
         
         offset = hoffset
         
@@ -611,6 +613,12 @@ class Data:
                 else:
                     return np.array([], dtype=np.float32).reshape(len(vars), 0)
             
+            # For non-tipsy formats, process the data and break after first successful read
+            if format_info.get('name') != "tipsy" and cdata.size > 0:
+                # Process the data and break out - non-tipsy files are read entirely in one chunk
+                _log_info(f"Non-tipsy format: read {cdata.size} elements, processing and exiting")
+                # Continue with normal processing below, but will break at end of loop
+            
             # Progress reporting for tipsy format
             if format_info.get('name') == "tipsy":
                 ncum = (offset - 32 + chunksize) // dsize
@@ -633,16 +641,20 @@ class Data:
             chunk_data = DataProcessor.cull_tile_reshape_single(cdata, vars, bbox, r1, r2, 
                                                               format_info, lightcone)
             if chunk_data.size > 0:
-                # MEMORY OPTIMIZATION: Extract only position fields (x,y,z) from chunk_data
-                # This reduces memory usage from 6 fields to 3 fields per chunk
-                if len(vars) == 6 and vars[:3] == ['x', 'y', 'z'] and vars[3:6] == ['vx', 'vy', 'vz']:
-                    # Extract only first 3 rows (x,y,z) and discard velocity fields
-                    chunk_data = chunk_data[:3, :]  # Keep only x,y,z rows
+                # MEMORY OPTIMIZATION: Only strip velocity fields if we're doing position-only analysis
+                # DO NOT strip velocity fields if they were explicitly requested (e.g., 'xvp' dataset)
+                # This optimization should only apply when position data is sufficient for the analysis
+                # For now, preserve all requested fields to maintain data integrity
                 
                 data_chunks.append(chunk_data)
             
             # Continue processing all chunks
             chunks_processed += 1
+            
+            # For non-tipsy formats, break after processing the first (and only) chunk
+            if format_info.get('name') != "tipsy":
+                _log_info(f"Non-tipsy format: completed processing, breaking out of chunk loop")
+                break
         
         # Concatenate all chunks once at the end (memory efficient)
         if data_chunks:
@@ -945,10 +957,27 @@ class Data:
         args = [[step, bbox, dprops, format_info, True, 0, -1] 
                 for step in range(1, max_step + 1)]
         
-        with mp.Pool(processes=self.nproc) as pool:
-            results = pool.starmap(self._read_step, args)
+        # Use serial execution for small datasets or test environments to avoid hanging
+        if max_step <= 3 or self.nproc == 1:
+            _log_info(f"Using serial execution for lightcone data (max_step={max_step}, nproc={self.nproc})")
+            results = [self._read_step(*arg) for arg in args]
+        else:
+            _log_info(f"Using parallel execution for lightcone data (max_step={max_step}, nproc={self.nproc})")
+            with mp.Pool(processes=self.nproc) as pool:
+                results = pool.starmap(self._read_step, args)
         
-        concatenated = np.concatenate(results, axis=1)
+        # Handle empty results
+        if not results or all(len(r) == 0 for r in results):
+            _log_info("No lightcone data found in specified bbox")
+            return np.array([], dtype=[]).reshape(0,)
+        
+        # Filter out empty results before concatenation
+        non_empty_results = [r for r in results if len(r) > 0]
+        if not non_empty_results:
+            _log_info("All lightcone results were empty")
+            return np.array([], dtype=[]).reshape(0,)
+        
+        concatenated = np.concatenate(non_empty_results, axis=1)
         # Wrap in array to maintain backward compatibility with legacy format (1, N) shape
         data = np.asarray([np.rec.fromarrays(concatenated, names=vars)])
         

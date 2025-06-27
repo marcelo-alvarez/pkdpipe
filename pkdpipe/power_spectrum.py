@@ -104,6 +104,15 @@ from .multi_gpu_utils import (
 )
 
 
+# MPI setup (import once at module level to avoid initialization conflicts)
+try:
+    from mpi4py import MPI
+    _MPI_COMM = MPI.COMM_WORLD
+    _MPI_AVAILABLE = True
+except ImportError:
+    _MPI_COMM = None
+    _MPI_AVAILABLE = False
+
 class PowerSpectrumCalculator:
     """
     Multi-GPU power spectrum calculator using JAX FFT.
@@ -158,6 +167,9 @@ class PowerSpectrumCalculator:
             n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
             is_distributed = n_processes > 1  # Infer distributed mode from SLURM
             
+            # DEBUG: Print k-bin edges for comparison
+            print(f"DEBUG k-bins (process {process_id}): {len(self.k_bins)} edges = {self.k_bins}")
+            
             if process_id == 0:
                 print(f"PowerSpectrumCalculator initialized:")
                 print(f"  Grid size: {ngrid}³")
@@ -191,12 +203,18 @@ class PowerSpectrumCalculator:
         Raises:
             ValueError: If particle data is invalid
         """
+        # DEBUG: Track which processes enter the power spectrum calculation
+        process_id = int(os.environ.get('SLURM_PROCID', '0'))
+        print(f"DEBUG: Process {process_id} ENTERED calculate_power_spectrum", flush=True)
+        
         # Validate input
         self._validate_particles(particles)
+        print(f"DEBUG: Process {process_id} passed particle validation", flush=True)
         
         # Check execution mode using SLURM environment (no JAX needed yet)
         n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
         distributed_mode = n_processes > 1
+        print(f"DEBUG: Process {process_id} detected distributed_mode={distributed_mode}, n_processes={n_processes}", flush=True)
         print(f"DEBUG: SLURM distributed mode = {distributed_mode} (SLURM_NTASKS={n_processes})", flush=True)
         print(f"DEBUG: self.n_devices = {self.n_devices}", flush=True)
         
@@ -238,6 +256,7 @@ class PowerSpectrumCalculator:
             if np.any(particles[coord] < 0) or np.any(particles[coord] >= self.box_size):
                 raise ValueError("Particles outside simulation box")
     
+
     def _calculate_distributed(self, particles: Dict[str, np.ndarray], 
                              gridder: ParticleGridder, subtract_shot_noise: bool,
                              assignment: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -250,22 +269,27 @@ class PowerSpectrumCalculator:
         particle ends up on the process responsible for its spatial region.
         """
         
+
+        
         # Use SLURM environment variables instead of JAX to avoid early JAX initialization
         process_id = int(os.environ.get('SLURM_PROCID', '0'))
         n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
+        print(f"DEBUG: Process {process_id} ENTERED _calculate_distributed", flush=True)
         
-        # Initialize MPI communicator
-        try:
-            from mpi4py import MPI
-            comm = MPI.COMM_WORLD
-        except ImportError:
+        # Use global MPI communicator
+        if not _MPI_AVAILABLE:
             raise ImportError("MPI4py required for distributed mode but not available")
+        comm = _MPI_COMM
+        print(f"DEBUG: Process {process_id} initialized MPI communicator", flush=True)
         
         # Step 1: Redistribute particles based on spatial decomposition using MPI4py
         grid_shape = (self.ngrid, self.ngrid, self.ngrid)
         spatial_particles, y_min, y_max, base_y_min, base_y_max = redistribute_particles_mpi(
             particles, grid_shape, self.box_size, comm
         )
+        
+        # Debug: Check domain decomposition
+        print(f"Process {process_id}: domain y_min={y_min:.1f}, y_max={y_max:.1f}, base_y_min={base_y_min:.1f}, base_y_max={base_y_max:.1f}", flush=True)
         
         # Get process info without JAX (use SLURM environment)
         process_id = int(os.environ.get('SLURM_PROCID', '0'))
@@ -280,97 +304,126 @@ class PowerSpectrumCalculator:
         print(f"Process {process_id}: Global particle count (MPI): {self._global_total_particles}, local: {local_particle_count}", flush=True)
             
         # Step 2: Create spatial slab grid (not full grid)
-        # slab_height should be in grid cells, not physical coordinates
-        slab_height = int(base_y_max - base_y_min)
+        # FIXED: Convert from physical coordinates to grid cell indices
+        # base_y_min/max are in Mpc/h, need to convert to grid cells
+        base_y_min_cells = int(round(base_y_min * self.ngrid / self.box_size))
+        base_y_max_cells = int(round(base_y_max * self.ngrid / self.box_size))
+        slab_height = base_y_max_cells - base_y_min_cells
+        
+        print(f"Process {process_id}: Spatial domain conversion - base_y=[{base_y_min:.1f}, {base_y_max:.1f}] Mpc/h -> cells=[{base_y_min_cells}, {base_y_max_cells}], slab_height={slab_height} cells")
         
         print(f"Process {process_id}: About to start gridding to slab {self.ngrid}x{slab_height}x{self.ngrid}", flush=True)
         
         # === CRITICAL: Grid particles to slab including ghost zones ===
         # This call uses multiprocessing and must complete before JAX initialization
-        full_slab = gridder.particles_to_slab(spatial_particles, y_min, y_max, self.ngrid)
+        # FIXED: Convert y_min/y_max from physical coordinates to grid cells
+        y_min_cells = int(round(y_min * self.ngrid / self.box_size))
+        y_max_cells = int(round(y_max * self.ngrid / self.box_size))
+        print(f"Process {process_id}: Ghost domain conversion - y=[{y_min:.1f}, {y_max:.1f}] Mpc/h -> cells=[{y_min_cells}, {y_max_cells}]")
+        
+        full_slab = gridder.particles_to_slab(spatial_particles, y_min_cells, y_max_cells, self.ngrid)
         
         print(f"Process {process_id}: Gridding complete, full_slab shape: {full_slab.shape}", flush=True)
         
         # === SAFE POINT: Initialize JAX after multiprocessing is complete ===
-        jax, jnp = _ensure_jax_initialized()
-        if jax is not None:
-            process_id = jax.process_index()  # Now safe to use JAX
-            print(f"Process {process_id}: JAX initialized after gridding", flush=True)
+        # This is similar to how power_spectrum_real_data.py handles JAX initialization
+        print(f"Process {process_id}: JAX initialized successfully after multiprocessing", flush=True)
         
         # MPI Barrier: Wait for all processes to complete gridding before proceeding to JAX operations
         try:
-            from mpi4py import MPI
-            comm = MPI.COMM_WORLD
-            if jax is not None:
-                process_id = jax.process_index()
+            if _MPI_AVAILABLE:
+                comm = _MPI_COMM
                 print(f"Process {process_id}: Entering MPI barrier after gridding", flush=True)
-            comm.Barrier()
-            if jax is not None:
-                process_id = jax.process_index()
+                comm.Barrier()
                 print(f"Process {process_id}: Exiting MPI barrier after gridding", flush=True)
         except ImportError:
             # MPI not available, skip barrier
             pass
         
         # Extract owned portion (remove ghost zones)
-        ghost_start = int(round((base_y_min - y_min) * self.ngrid / self.box_size))
-        ghost_end = int(round((base_y_min + slab_height - y_min) * self.ngrid / self.box_size))
+        # FIXED: Use grid cell coordinates instead of physical coordinates
+        ghost_start = base_y_min_cells - y_min_cells
+        ghost_end = base_y_max_cells - y_min_cells
+        
+        # Debug ghost zone calculation
+        print(f"Process {process_id}: Ghost zone calc - Physical: y=[{y_min:.1f}, {y_max:.1f}], base_y=[{base_y_min:.1f}, {base_y_max:.1f}]")
+        print(f"Process {process_id}: Ghost zone calc - Grid cells: y=[{y_min_cells}, {y_max_cells}], base_y=[{base_y_min_cells}, {base_y_max_cells}]")
+        print(f"Process {process_id}: slab_height={slab_height}, ghost_start={ghost_start}, ghost_end={ghost_end}, full_slab.shape={full_slab.shape}")
+        
+        # DEBUG: Check if full_slab contains NaN before extraction
+        full_slab_sum = np.sum(full_slab)
+        full_slab_has_nan = np.isnan(full_slab_sum)
+        print(f"Process {process_id}: full_slab sum: {full_slab_sum}, has_nan: {full_slab_has_nan}, min: {np.min(full_slab)}, max: {np.max(full_slab)}")
+        
         owned_slab = full_slab[:, ghost_start:ghost_end, :]  # Shape: (128, slab_height, 128)
         
         
         # Step 3: Calculate mean density and density contrast  
         local_mass = np.sum(owned_slab)
-        if jax is not None:
-            # In distributed mode, just use local mass times process count as approximation
-            # This avoids JAX collective operation issues for now
-            total_mass = local_mass * jax.process_count()
+        
+        # Use MPI to calculate true global mass
+        if _MPI_AVAILABLE:
+            total_mass = comm.allreduce(local_mass, op=MPI.SUM)
+            print(f"Process {process_id}: Global mass (MPI): {total_mass:.6e}, local mass: {local_mass:.6e}", flush=True)
         else:
             total_mass = local_mass
             
         mean_density = total_mass / self.ngrid**3
         
-        # Note: Individual slabs can have zero density - that's valid for spatial decomposition
-        # Only check if mean density is valid (not zero) when computing density contrast
-        if mean_density > 0:
-            delta_slab = (owned_slab - mean_density) / mean_density
-        else:
-            if jnp is not None:
-                delta_slab = owned_slab.astype(jnp.float32)
-            else:
-                delta_slab = owned_slab.astype(np.float32)
+        # Debug: Check owned slab
+        print(f"Process {process_id}: owned_slab shape: {owned_slab.shape}, sum: {owned_slab.sum():.6e}, mean: {owned_slab.mean():.6e}", flush=True)
         
-        # Store diagnostics (skip if mean density is zero)
-        if mean_density > 0:
-            self._store_density_diagnostics(owned_slab, delta_slab, len(spatial_particles['x']))
+        # Validate mean density
+        if mean_density <= 0:
+            raise ValueError(f"Process {process_id}: Mean density is zero or negative ({mean_density:.6e}) - check particle redistribution")
         
-        # Step 4: Distributed FFT on spatial slabs (input) -> k-space slabs (output)
-        if jax is not None:
-            process_id = jax.process_index()
-            print(f"Process {process_id}: About to call FFT with delta_slab shape {delta_slab.shape}", flush=True)
-            delta_k_slab = fft(delta_slab, direction='r2c')  # JAX distributed FFT: spatial slab -> k-space slab
-            # Calculate power spectrum on k-space slab
+        # Calculate density contrast (mean_density is guaranteed > 0 from validation above)
+        delta_slab = (owned_slab - mean_density) / mean_density
+        
+        # Debug: Check delta slab
+        print(f"Process {process_id}: delta_slab shape: {delta_slab.shape}, mean: {delta_slab.mean():.6e}, std: {delta_slab.std():.6e}", flush=True)
+        
+        # Store diagnostics
+        self._store_density_diagnostics(owned_slab, delta_slab, len(spatial_particles['x']))
+        
+        # Step 4: Initialize JAX with distributed mode right before FFT
+        # This ensures JAX is only initialized after all multiprocessing is complete
+        print(f"Process {process_id}: About to call FFT with delta_slab shape {delta_slab.shape}", flush=True)
+        
+        # Use the fft() function which will handle JAX distributed initialization
+        delta_k_slab = fft(delta_slab, direction='r2c')  # JAX distributed FFT: spatial slab -> k-space slab
+        
+        # Calculate power spectrum on k-space slab  
+        # Import JAX numpy after fft() has initialized JAX
+        try:
+            import jax.numpy as jnp
             power_3d_slab = jnp.abs(delta_k_slab)**2 * (self.volume / self.ngrid**6)
             power_3d_np = np.array(power_3d_slab)
-        else:
-            # Fallback to numpy FFT
-            delta_k_slab = np.fft.rfftn(delta_slab)
+            print(f"DEBUG: Process {process_id} - FFT COMPLETE (JAX path)", flush=True)
+        except:
+            # Fallback if JAX not available
             power_3d_slab = np.abs(delta_k_slab)**2 * (self.volume / self.ngrid**6)
             power_3d_np = power_3d_slab
+            print(f"DEBUG: Process {process_id} - FFT COMPLETE (NumPy fallback path)", flush=True)
         
         # Step 5: Create k-grid for k-space slab and apply corrections
         # Convert grid coordinates to physical coordinates for create_slab_k_grid
         physical_y_min = base_y_min * self.box_size / self.ngrid  
         physical_y_max = base_y_max * self.box_size / self.ngrid
+        print(f"DEBUG: Process {process_id} - ABOUT TO CREATE K-GRID", flush=True)
         k_grid_slab = create_slab_k_grid(self.ngrid, self.box_size, physical_y_min, physical_y_max)
-        power_3d_corrected = self._apply_window_correction(power_3d_np, k_grid_slab, assignment)
+        print(f"DEBUG: Process {process_id} - K-GRID CREATED", flush=True)
+        power_3d_corrected, k_grid_corrected = self._apply_window_correction(power_3d_np, k_grid_slab, assignment)
+        print(f"DEBUG: Process {process_id} - WINDOW CORRECTION APPLIED", flush=True)
         
         # Step 6: Bin and reduce across processes
+        print(f"DEBUG: Process {process_id} - ABOUT TO CALL BINNING", flush=True)
         k_binned, power_binned, n_modes = bin_power_spectrum_distributed(
-            k_grid_slab, power_3d_corrected, self.k_bins
+            k_grid_corrected, power_3d_corrected, self.k_bins
         )
         
         return self._finalize_power_spectrum(k_binned, power_binned, n_modes, 
-                                           subtract_shot_noise, len(spatial_particles['x']))
+                                           subtract_shot_noise, self._global_total_particles)
     
     def _calculate_multi_gpu(self, particles: Dict[str, np.ndarray],
                            gridder: ParticleGridder, subtract_shot_noise: bool,
@@ -411,7 +464,7 @@ class PowerSpectrumCalculator:
         
         # Create k-grid and apply corrections
         k_grid = create_full_k_grid(self.ngrid, self.box_size)
-        power_3d_corrected = self._apply_window_correction(power_3d_np, k_grid, assignment)
+        power_3d_corrected, _ = self._apply_window_correction(power_3d_np, k_grid, assignment)
         
         # Bin power spectrum
         k_binned, power_binned, n_modes = bin_power_spectrum_single(
@@ -430,13 +483,16 @@ class PowerSpectrumCalculator:
         
         # MPI barrier before gridding timing
         try:
-            from mpi4py import MPI
-            comm = MPI.COMM_WORLD
-            process_id = comm.Get_rank()
-            comm.Barrier()
-            if process_id == 0:
+            if _MPI_AVAILABLE:
+                comm = _MPI_COMM
+                process_id = comm.Get_rank()
+                comm.Barrier()
+                if process_id == 0:
+                    print(f"🔄 Starting particle assignment to grid...")
+            else:
+                process_id = 0
                 print(f"🔄 Starting particle assignment to grid...")
-        except:
+        except Exception:
             process_id = 0
             print(f"🔄 Starting particle assignment to grid...")
         
@@ -472,12 +528,15 @@ class PowerSpectrumCalculator:
         if mean_density <= 0:
             raise ValueError("Mean density is zero - check particle data")
         
+        # Store diagnostics before delta conversion (save original density)
+        original_density = density_grid.copy()
+        
         # MEMORY OPTIMIZATION: In-place delta calculation (no separate delta_grid)
         density_grid /= mean_density
         density_grid -= 1.0  # Now density_grid contains delta field in-place
         
-        # Store diagnostics (density_grid now contains delta field in-place)
-        self._store_density_diagnostics(density_grid, density_grid, len(particles['x']))
+        # Store diagnostics with original density and delta field
+        self._store_density_diagnostics(original_density, density_grid, len(particles['x']))
         
         # Single GPU/CPU FFT (density_grid now contains delta field)
         if jnp is not None:
@@ -491,7 +550,7 @@ class PowerSpectrumCalculator:
         
         # Create k-grid and apply corrections
         k_grid = create_full_k_grid(self.ngrid, self.box_size)
-        power_3d_corrected = self._apply_window_correction(power_3d_np, k_grid, assignment)
+        power_3d_corrected, _ = self._apply_window_correction(power_3d_np, k_grid, assignment)
         
         # Bin power spectrum
         k_binned, power_binned, n_modes = bin_power_spectrum_single(
@@ -557,12 +616,15 @@ class PowerSpectrumCalculator:
         if mean_density <= 0:
             raise ValueError("Mean density is zero - check particle data")
         
+        # Store diagnostics before delta conversion (save original density)
+        original_density = density_grid.copy()
+        
         # MEMORY OPTIMIZATION: In-place delta calculation (no separate delta_grid)
         density_grid /= mean_density
         density_grid -= 1.0  # Now density_grid contains delta field in-place
         
-        # Store diagnostics (density_grid now contains delta field in-place)
-        self._store_density_diagnostics(density_grid, density_grid, total_particles)
+        # Store diagnostics with original density and delta field
+        self._store_density_diagnostics(original_density, density_grid, total_particles)
         
         # Continue with standard power spectrum calculation
         if JAX_AVAILABLE:
@@ -575,7 +637,7 @@ class PowerSpectrumCalculator:
         
         # Create k-grid and apply corrections
         k_grid = create_full_k_grid(self.ngrid, self.box_size)
-        power_3d_corrected = self._apply_window_correction(power_3d_np, k_grid, assignment)
+        power_3d_corrected, _ = self._apply_window_correction(power_3d_np, k_grid, assignment)
         
         # Bin power spectrum
         k_binned, power_binned, n_modes = bin_power_spectrum_single(
@@ -648,8 +710,37 @@ class PowerSpectrumCalculator:
             n_modes_empty = np.zeros(len(k_bins_empty), dtype=int)
             return k_bins_empty, power_empty, n_modes_empty
         
-        # Calculate mean density (local to each process)
-        mean_density = np.float32(density_grid.mean())
+        # Calculate global mean density across all processes
+        n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
+        
+        if n_processes > 1:
+            # Distributed mode: compute global mean density using MPI
+            try:
+                from mpi4py import MPI
+                comm = MPI.COMM_WORLD
+                
+                # Local density statistics
+                local_sum = np.sum(density_grid)
+                local_count = density_grid.size
+                
+                # Global reductions
+                global_sum = comm.allreduce(local_sum, op=MPI.SUM)
+                global_count = comm.allreduce(local_count, op=MPI.SUM)
+                
+                # Global mean density
+                global_mean_density = global_sum / global_count
+                mean_density = np.float32(global_mean_density)
+                
+                print(f"DEBUG: Process {comm.Get_rank()}: Local mean: {density_grid.mean():.6e}, Global mean: {mean_density:.6e}")
+                
+            except ImportError:
+                # Fallback to local mean if MPI not available
+                print("WARNING: MPI not available for global mean calculation, using local mean")
+                mean_density = np.float32(density_grid.mean())
+        else:
+            # Single process mode: use local mean
+            mean_density = np.float32(density_grid.mean())
+        
         if mean_density <= 0:
             raise ValueError("Mean density is zero - check particle data")
         
@@ -673,7 +764,7 @@ class PowerSpectrumCalculator:
         
         # Create local k-grid and apply corrections
         k_grid_local = create_local_k_grid(self.ngrid, self.box_size)
-        power_3d_corrected = self._apply_window_correction(power_3d_np, k_grid_local, assignment)
+        power_3d_corrected, _ = self._apply_window_correction(power_3d_np, k_grid_local, assignment)
         
         # Bin and reduce across processes
         try:
@@ -702,18 +793,76 @@ class PowerSpectrumCalculator:
         else:
             delta_flat = delta_data
         
-        mean_density = float(np.mean(density_flat))
+        # Check if we're in distributed mode
+        n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
         
-        self._last_density_stats = {
-            'mean_density': mean_density,
-            'density_variance': float(np.var(density_flat)),
-            'delta_mean': float(np.mean(delta_flat)),
-            'delta_variance': float(np.var(delta_flat)),
-            'theoretical_shot_noise_variance': float(n_particles / (mean_density * self.ngrid**3))
-        }
+        if n_processes > 1:
+            # Distributed mode: compute global statistics using MPI
+            try:
+                from mpi4py import MPI
+                comm = MPI.COMM_WORLD
+                
+                # Local statistics
+                local_sum = np.sum(density_flat)
+                local_count = len(density_flat)
+                local_sum_sq = np.sum(density_flat**2)
+                
+                local_delta_sum = np.sum(delta_flat)
+                local_delta_sum_sq = np.sum(delta_flat**2)
+                
+                # Global reductions
+                global_sum = comm.allreduce(local_sum, op=MPI.SUM)
+                global_count = comm.allreduce(local_count, op=MPI.SUM)
+                global_sum_sq = comm.allreduce(local_sum_sq, op=MPI.SUM)
+                
+                global_delta_sum = comm.allreduce(local_delta_sum, op=MPI.SUM)
+                global_delta_sum_sq = comm.allreduce(local_delta_sum_sq, op=MPI.SUM)
+                
+                # Compute global mean and variance
+                global_mean = global_sum / global_count
+                global_variance = (global_sum_sq / global_count) - global_mean**2
+                
+                global_delta_mean = global_delta_sum / global_count  
+                global_delta_variance = (global_delta_sum_sq / global_count) - global_delta_mean**2
+                
+                # Store global total particles for get_density_diagnostics
+                self._global_total_particles = comm.allreduce(n_particles, op=MPI.SUM)
+                
+                print(f"DEBUG: Process {comm.Get_rank()}: Global density stats - mean: {global_mean:.6e}, variance: {global_variance:.6e}")
+                
+                self._last_density_stats = {
+                    'mean_density': float(global_mean),
+                    'density_variance': float(global_variance),
+                    'delta_mean': float(global_delta_mean),
+                    'delta_variance': float(global_delta_variance),
+                    'theoretical_shot_noise_variance': float(self._global_total_particles / (global_mean * self.ngrid**3)) if global_mean > 0 else np.nan
+                }
+                
+            except ImportError:
+                # Fallback to local stats if MPI not available
+                print("WARNING: MPI not available, using local density statistics")
+                mean_density = float(np.mean(density_flat))
+                self._last_density_stats = {
+                    'mean_density': mean_density,
+                    'density_variance': float(np.var(density_flat)),
+                    'delta_mean': float(np.mean(delta_flat)),
+                    'delta_variance': float(np.var(delta_flat)),
+                    'theoretical_shot_noise_variance': float(n_particles / (mean_density * self.ngrid**3)) if mean_density > 0 else np.nan
+                }
+        else:
+            # Single process mode: use local statistics
+            mean_density = float(np.mean(density_flat))
+            
+            self._last_density_stats = {
+                'mean_density': mean_density,
+                'density_variance': float(np.var(density_flat)),
+                'delta_mean': float(np.mean(delta_flat)),
+                'delta_variance': float(np.var(delta_flat)),
+                'theoretical_shot_noise_variance': float(n_particles / (mean_density * self.ngrid**3)) if mean_density > 0 else np.nan
+            }
     
     def _apply_window_correction(self, power_3d: np.ndarray, k_grid: np.ndarray, 
-                               assignment: str) -> np.ndarray:
+                               assignment: str) -> Tuple[np.ndarray, np.ndarray]:
         """
         Apply window function correction to the power spectrum.
         
@@ -723,16 +872,35 @@ class PowerSpectrumCalculator:
             assignment: Mass assignment scheme ('cic' or 'ngp')
             
         Returns:
-            Corrected 3D power spectrum
+            Tuple of (corrected 3D power spectrum, corrected k_grid)
         """
         print(f"DEBUG window correction: power_3d.shape = {power_3d.shape}, k_grid.shape = {k_grid.shape}", flush=True)
+        
+        # Check if shapes match - if not, create matching k_grid
+        if power_3d.shape != k_grid.shape:
+            print(f"DEBUG: Shape mismatch detected, creating matching k_grid", flush=True)
+            # Extract the actual slab dimensions from power_3d
+            nx, ny_slab, nz_rfft = power_3d.shape
+            
+            # Create k-grid with matching slab dimensions
+            fundamental_mode = 2 * np.pi / self.box_size
+            kx = np.fft.fftfreq(nx, d=1.0) * nx * fundamental_mode
+            ky = np.fft.fftfreq(ny_slab, d=1.0) * self.ngrid * fundamental_mode  # Use ngrid for proper scaling
+            kz = np.fft.rfftfreq(self.ngrid, d=1.0) * self.ngrid * fundamental_mode
+            
+            # Create 3D grid for the actual slab dimensions
+            KX, KY, KZ = np.meshgrid(kx, ky, kz, indexing='ij')
+            k_grid_corrected = np.sqrt(KX**2 + KY**2 + KZ**2)
+            print(f"DEBUG: Created corrected k_grid with shape {k_grid_corrected.shape}", flush=True)
+            k_grid = k_grid_corrected
+        
         if assignment.lower() == 'cic':
             window = self._cic_window_function(k_grid)
         elif assignment.lower() == 'ngp':
             window = self._ngp_window_function(k_grid)
         else:
             # Unknown assignment scheme, no correction
-            return power_3d
+            return power_3d, k_grid
         
         # Avoid division by zero
         window_safe = np.where(window > 1e-10, window, 1.0)
@@ -740,7 +908,7 @@ class PowerSpectrumCalculator:
         # Apply correction: P_corrected = P_measured / W²
         power_corrected = power_3d / (window_safe**2)
         
-        return power_corrected
+        return power_corrected, k_grid
     
     def _cic_window_function(self, k_grid: np.ndarray) -> np.ndarray:
         """
@@ -824,7 +992,7 @@ class PowerSpectrumCalculator:
             """
             Get diagnostic information about the last density field calculation.
             
-            For distributed mode, returns global statistics that work across all processes.
+            For distributed mode, returns global statistics computed across all processes.
             For single-process mode, returns detailed local statistics.
             
             Returns:
@@ -835,22 +1003,7 @@ class PowerSpectrumCalculator:
                 - delta_variance: Variance of density contrast field (if available)
                 - theoretical_shot_noise_variance: Expected shot noise variance (if available)
             """
-            # In distributed mode, provide global mean density that all processes can access
-            n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
-            if n_processes > 1 and hasattr(self, '_global_total_particles'):
-                # Calculate global mean density from total particles and box volume
-                volume = self.box_size ** 3
-                mean_density = float(self._global_total_particles / volume)
-                
-                return {
-                    'mean_density': mean_density,
-                    'density_variance': float('nan'),  # Not available in distributed mode
-                    'delta_mean': float('nan'),        # Not available in distributed mode  
-                    'delta_variance': float('nan'),    # Not available in distributed mode
-                    'theoretical_shot_noise_variance': float('nan')  # Not available in distributed mode
-                }
-            
-            # Single-process mode or fallback: use detailed local statistics if available
+            # Return the computed statistics (either local or global)
             if hasattr(self, '_last_density_stats'):
                 return self._last_density_stats.copy()
             else:
@@ -977,7 +1130,7 @@ def redistribute_particles_mpi(particles, grid_shape, box_size, comm):
     memory_before_dest = get_memory_usage()
     
     # Convert y-coordinates to grid indices (IN-PLACE to save memory)
-    y_grid = particles['y'] / cell_size  # This modifies particles['y'] in-place due to float32
+    y_grid = particles['y'] / cell_size  # particles['y'] should be in [0, box_size]
     y_indices = np.floor(y_grid).astype(np.int32)
     
     # Determine destination rank for each particle
@@ -1169,6 +1322,12 @@ def redistribute_particles_mpi(particles, grid_shape, box_size, comm):
         print(f"🔍 RECV RANK {rank}: STREAMING COMPLETE: {memory_after_recv:.2f} GB (+{memory_after_recv - memory_before_recv:.2f} GB total)", flush=True)
         print(f"🔍 RECV RANK {rank}: No concatenation needed - particles streamed directly to final arrays", flush=True)
         
+        # DEBUG: Check if received particles contain NaN
+        for key in field_keys:
+            if len(received_particles[key]) > 0:
+                has_nan = np.isnan(np.sum(received_particles[key]))
+                print(f"🔍 RECV RANK {rank}: received_particles['{key}'] has_nan: {has_nan}, range: [{np.min(received_particles[key]):.6f}, {np.max(received_particles[key]):.6f}]", flush=True)
+        
         return received_particles
     
     # Send particles to other ranks
@@ -1247,15 +1406,60 @@ def redistribute_particles_mpi(particles, grid_shape, box_size, comm):
                 # Clean up empty destination immediately
                 del particles_by_dest[dest_rank]
     
-    # Receive particles from other ranks using streaming approach
-    for source_rank in range(size):
-        if source_rank != rank:
+    # DEADLOCK FIX: Use ring communication pattern to avoid all-to-all deadlock
+    # Each rank communicates with one other rank at a time in a round-robin fashion
+    for step in range(size - 1):
+        # Calculate communication partner for this step
+        send_to = (rank + step + 1) % size
+        recv_from = (rank - step - 1) % size
+        
+        # Start non-blocking send to send_to rank
+        send_req = None
+        if send_to in particles_by_dest and particles_by_dest[send_to]['x'].size > 0:
+            # Send metadata first (blocking to ensure receiver gets it)
+            metadata = {'n_particles': len(particles_by_dest[send_to]['x'])}
+            comm.send(metadata, dest=send_to, tag=100)
+            
+            # Send particles in chunks (blocking is OK since we're doing one-to-one)
+            particles_to_send = particles_by_dest[send_to]
+            total_particles = len(particles_to_send['x'])
+            
+            # Calculate chunk size
+            bytes_per_particle = len(field_keys) * 4
+            max_chunk_particles = int((2.0 * 1024**3) / bytes_per_particle)
+            n_chunks = (total_particles + max_chunk_particles - 1) // max_chunk_particles
+            
+            for chunk_idx in range(n_chunks):
+                start_idx = chunk_idx * max_chunk_particles
+                end_idx = min((chunk_idx + 1) * max_chunk_particles, total_particles)
+                
+                chunk_data = {}
+                for key in field_keys:
+                    chunk_data[key] = particles_to_send[key][start_idx:end_idx]
+                
+                tag = (200 + chunk_idx) % 30000
+                comm.send(chunk_data, dest=send_to, tag=tag)
+                del chunk_data  # Free chunk immediately
+            
+            # Clean up sent particles
+            for key in field_keys:
+                particles_by_dest[send_to][key] = None
+            del particles_by_dest[send_to]
+            
+        else:
+            # Send empty metadata
+            if send_to < size:  # Safety check
+                metadata = {'n_particles': 0}
+                comm.send(metadata, dest=send_to, tag=100)
+        
+        # Receive from recv_from rank
+        if recv_from != rank:
             memory_before_receive = get_memory_usage()
-            received_particles = chunked_mpi_recv(source_rank, comm)
+            received_particles = chunked_mpi_recv(recv_from, comm)
             
             memory_after_receive = get_memory_usage()
             received_memory = sum(arr.nbytes for arr in received_particles.values()) / (1024**3)
-            print(f"🔍 MPI RANK {rank}: After receiving from rank {source_rank}: {memory_after_receive:.2f} GB (+{received_memory:.2f} GB)", flush=True)
+            print(f"🔍 MPI RANK {rank}: After receiving from rank {recv_from}: {memory_after_receive:.2f} GB (+{received_memory:.2f} GB)", flush=True)
             
             # MEMORY OPTIMIZATION: Append to redistributed_particles and immediately free received_particles
             for key in field_keys:
@@ -1270,13 +1474,15 @@ def redistribute_particles_mpi(particles, grid_shape, box_size, comm):
             
             memory_after_append = get_memory_usage()
             freed_memory = memory_after_receive - memory_after_append
-            print(f"🔍 MPI RANK {rank}: After appending+cleanup from rank {source_rank}: {memory_after_append:.2f} GB (-{freed_memory:.2f} GB freed)", flush=True)
+            print(f"🔍 MPI RANK {rank}: After appending+cleanup from rank {recv_from}: {memory_after_append:.2f} GB (-{freed_memory:.2f} GB freed)", flush=True)
     
-    # Add local particles (particles that stay on this rank)
-    local_particles = particles_by_dest[rank]
-    for key in field_keys:
-        if len(local_particles[key]) > 0:
-            redistributed_particles[key].append(local_particles[key])
+    # Add local particles (particles that stay on this rank) if any remain
+    if rank in particles_by_dest:
+        local_particles = particles_by_dest[rank]
+        for key in field_keys:
+            if len(local_particles[key]) > 0:
+                redistributed_particles[key].append(local_particles[key])
+        del particles_by_dest[rank]
     
     # Phase 4: Clean up particles_by_dest before final concatenation
     memory_before_final_cleanup = get_memory_usage()
@@ -1321,13 +1527,13 @@ def redistribute_particles_mpi(particles, grid_shape, box_size, comm):
             
             # Stream arrays into final array (NO TEMPORARY MEMORY SPIKE)
             start_idx = 0
-            for i, arr in enumerate(redistributed_particles[key]):
+            for arr in redistributed_particles[key]:
                 end_idx = start_idx + arr.shape[0]
                 final_particles[key][start_idx:end_idx] = arr
                 start_idx = end_idx
-                
-                # Clean up source array immediately
-                del redistributed_particles[key][i]
+            
+            # Clean up source arrays AFTER all copying is complete
+            redistributed_particles[key].clear()
                 
             print(f"🔍 MPI RANK {rank}: Streaming complete for key '{key}' - no concatenation spike", flush=True)
         else:
@@ -1355,9 +1561,19 @@ def redistribute_particles_mpi(particles, grid_shape, box_size, comm):
     n_final = len(final_particles['x'])
     print(f"🔍 MPI RANK {rank}: REDISTRIBUTION COMPLETE - {n_final} particles, memory: {memory_end:.2f} GB (+{total_overhead:.2f} GB total)", flush=True)
     
+    # DEBUG: Check if final particles contain NaN
+    for key in ['x', 'y', 'z']:
+        if len(final_particles[key]) > 0:
+            has_nan = np.isnan(np.sum(final_particles[key]))
+            print(f"🔍 MPI RANK {rank}: FINAL final_particles['{key}'] has_nan: {has_nan}, range: [{np.min(final_particles[key]):.6f}, {np.max(final_particles[key]):.6f}]", flush=True)
+        else:
+            print(f"🔍 MPI RANK {rank}: FINAL final_particles['{key}'] is empty", flush=True)
+    
     # Return spatial domain boundaries along with particles
-    base_y_min = 0.0
-    base_y_max = box_size
+    # Convert grid indices back to spatial coordinates for base domain
+    base_y_min = y_start * cell_size
+    base_y_max = y_end * cell_size
+    print(f"DEBUG: MPI rank {rank}: returning domain y_min={y_min:.1f}, y_max={y_max:.1f}, base_y_min={base_y_min:.1f}, base_y_max={base_y_max:.1f}", flush=True)
     return final_particles, y_min, y_max, base_y_min, base_y_max
 
 

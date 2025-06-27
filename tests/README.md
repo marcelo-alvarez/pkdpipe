@@ -22,7 +22,7 @@ This directory contains comprehensive tests for the pkdpipe library, covering al
 
 ## Running Tests
 
-### All Tests
+### Serial Tests (Recommended)
 ```bash
 # From project root
 python -m pytest tests/
@@ -33,6 +33,21 @@ python -m pytest tests/ -v
 # With coverage report
 python -m pytest tests/ --cov=pkdpipe
 ```
+
+### 🚨 SLURM Distributed Tests (Currently Broken)
+```bash
+# Comprehensive testing with MPI/GPU support - CURRENTLY FAILING
+srun -n 4 -c 32 --qos=interactive -N 1 --time=60 -C gpu -A cosmosim --gpus-per-node=4 --exclusive python -m pytest tests/ -v
+
+# Using test script - ALSO BROKEN
+srun -n 4 -c 32 --qos=interactive -N 1 --time=60 -C gpu -A cosmosim --gpus-per-node=4 --exclusive ./run_comprehensive_tests.sh
+```
+
+**⚠️ Known Issues**:
+- MPI tests crash with exit code 255
+- SLURM jobs terminated before completion
+- Multi-process execution broken
+- See `../testlog` for detailed failure logs
 
 ### Individual Test Suites
 ```bash
