@@ -281,7 +281,6 @@ def bin_power_spectrum_distributed(k_grid: np.ndarray, power_grid: np.ndarray,
     # Remove zero mode
     nonzero = k_flat > 0
     process_id = int(os.environ.get('SLURM_PROCID', '0'))
-    print(f"Process {process_id}: Before zero removal: {len(k_flat)} modes, after: {np.sum(nonzero)} modes", flush=True)
     
     # DEBUG: Print power values for specific k-modes to compare single vs distributed
     if len(k_flat) > 0:
@@ -298,11 +297,7 @@ def bin_power_spectrum_distributed(k_grid: np.ndarray, power_grid: np.ndarray,
                     print(f"  k={matching_k[i]:.6f}, P={matching_power[i]:.6e}", flush=True)
         
         # Also print some specific k-modes for detailed debugging
-        if len(k_flat) >= 10:
-            print(f"Process {process_id}: DETAILED K-MODE DEBUG (first 10 modes):", flush=True)
-            for i in range(min(10, len(k_flat))):
-                # Calculate kx, ky, kz indices from flattened index
-                print(f"  Mode {i}: k={k_flat[i]:.6f}, P={power_flat[i]:.6e}", flush=True)
+        # (debug statements removed)
     
     k_flat = k_flat[nonzero]
     power_flat = power_flat[nonzero]
@@ -396,7 +391,6 @@ def bin_power_spectrum_single(k_grid: np.ndarray, power_grid: np.ndarray,
     # Remove zero mode
     nonzero = k_flat > 0
     
-    print(f"SINGLE PROCESS: Before zero removal: {len(k_flat)} modes, after: {np.sum(nonzero)} modes", flush=True)
     
     # DEBUG: Print power values for specific k-modes to compare with distributed
     if len(k_flat) > 0:
@@ -413,10 +407,7 @@ def bin_power_spectrum_single(k_grid: np.ndarray, power_grid: np.ndarray,
                     print(f"  k={matching_k[i]:.6f}, P={matching_power[i]:.6e}", flush=True)
         
         # Also print some specific k-modes for detailed debugging
-        if len(k_flat) >= 10:
-            print(f"SINGLE PROCESS: DETAILED K-MODE DEBUG (first 10 modes):", flush=True)
-            for i in range(min(10, len(k_flat))):
-                print(f"  Mode {i}: k={k_flat[i]:.6f}, P={power_flat[i]:.6e}", flush=True)
+        # (debug statements removed)
     
     k_flat = k_flat[nonzero]
     power_flat = power_flat[nonzero]

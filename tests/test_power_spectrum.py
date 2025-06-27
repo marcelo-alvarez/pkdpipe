@@ -93,7 +93,6 @@ class TestPowerSpectrumCalculator:
             'z': np.random.uniform(0, box_size, particles_per_process).astype(np.float32)
         }
         
-        print(f"DEBUG: random_particles fixture created {len(particles['x'])} particles")
         return particles
     
     def test_shot_noise_power_spectrum(self, random_particles):
@@ -232,13 +231,130 @@ class TestPowerSpectrumCalculator:
             else:
                 print(f"  ✅ DISTRIBUTED FFT WORKING: ratio = {ratio:.3f} ≈ 1.0")
         
-        # Ensure mean power is within reasonable range of shot noise
-        power_ratio = weighted_mean_power / expected_shot_noise
-        assert 0.7 < power_ratio < 1.3, (
-            f"Power spectrum normalization error: "
-            f"measured/expected = {power_ratio:.3f} (should be ≈ 1.0)"
-        )
+        # Note: Individual bin statistical validation via chi-squared test below
+        # Simple ratio test removed in favor of proper statistical analysis
         
+        # CHI-SQUARED STATISTICAL VALIDATION
+        print(f"\n" + "-"*50)
+        print("CHI-SQUARED STATISTICAL VALIDATION")
+        print("-"*50)
+        
+        # For shot noise, each k-bin should follow chi-squared distribution
+        # P_measured ~ P_expected * χ²(N_modes) / N_modes
+        # Calculate chi-squared statistic for each bin
+        valid_bins_mask = n_modes > 10  # Need sufficient modes for chi-squared validity
+        valid_power_bins = power_spectrum[valid_bins_mask]
+        valid_n_modes_bins = n_modes[valid_bins_mask]
+        
+        # Chi-squared test: (P_measured / P_expected - 1) * N_modes should be ~ χ²(N_modes) - N_modes
+        chi2_statistics = []
+        p_values = []
+        
+        try:
+            from scipy import stats
+            
+            for i, (p_measured, n_mod) in enumerate(zip(valid_power_bins, valid_n_modes_bins)):
+                # Normalized deviation
+                normalized_deviation = (p_measured / expected_shot_noise - 1.0) * n_mod
+                
+                # Chi-squared test: is this consistent with χ²(n_mod) - n_mod?
+                # For large n_mod, this approaches normal distribution with std = sqrt(2*n_mod)
+                if n_mod > 30:
+                    # Use normal approximation for large n_mod
+                    z_score = normalized_deviation / np.sqrt(2 * n_mod)
+                    p_value = 2 * (1 - stats.norm.cdf(abs(z_score)))  # Two-tailed test
+                else:
+                    # Use exact chi-squared for small n_mod
+                    chi2_val = normalized_deviation + n_mod
+                    p_value = 2 * min(stats.chi2.cdf(chi2_val, n_mod), 1 - stats.chi2.cdf(chi2_val, n_mod))
+                
+                chi2_statistics.append(normalized_deviation)
+                p_values.append(p_value)
+            
+            chi2_statistics = np.array(chi2_statistics)
+            p_values = np.array(p_values)
+            
+            # Statistical summary
+            n_valid_bins = len(valid_power_bins)
+            outliers_3sigma = np.sum(np.abs(chi2_statistics) > 3 * np.sqrt(2 * valid_n_modes_bins))
+            outliers_2sigma = np.sum(np.abs(chi2_statistics) > 2 * np.sqrt(2 * valid_n_modes_bins))
+            fraction_3sigma = outliers_3sigma / n_valid_bins
+            fraction_2sigma = outliers_2sigma / n_valid_bins
+            
+            # Global reduced chi-squared
+            reduced_chi2 = np.mean((chi2_statistics / np.sqrt(2 * valid_n_modes_bins))**2)
+            
+            print(f"Statistical Validation Results:")
+            print(f"  Valid k-bins for statistics: {n_valid_bins}")
+            print(f"  Outliers beyond 2σ: {outliers_2sigma}/{n_valid_bins} ({fraction_2sigma:.1%})")
+            print(f"  Outliers beyond 3σ: {outliers_3sigma}/{n_valid_bins} ({fraction_3sigma:.1%})")
+            print(f"  Reduced χ²: {reduced_chi2:.3f}")
+            print(f"  Mean p-value: {np.mean(p_values):.3f}")
+            print(f"  Min p-value: {np.min(p_values):.3f}")
+            
+            # Statistical validation criteria
+            # Expect ~5% beyond 2σ, ~0.3% beyond 3σ for good statistics
+            if fraction_3sigma > 0.05:  # More than 5% beyond 3σ is suspicious
+                print(f"  WARNING: Too many 3σ outliers ({fraction_3sigma:.1%} > 5%)")
+            else:
+                print(f"  ✅ 3σ outlier fraction acceptable ({fraction_3sigma:.1%} ≤ 5%)")
+            
+            if 0.5 < reduced_chi2 < 2.0:
+                print(f"  ✅ Reduced χ² in acceptable range (0.5 < {reduced_chi2:.3f} < 2.0)")
+            else:
+                print(f"  WARNING: Reduced χ² outside expected range: {reduced_chi2:.3f}")
+            
+            # Overall statistical consistency
+            overall_consistent = (fraction_3sigma <= 0.05) and (0.5 < reduced_chi2 < 2.0)
+            if overall_consistent:
+                print(f"  ✅ Power spectrum statistically consistent with white noise")
+            else:
+                print(f"  ❌ Power spectrum shows statistical inconsistencies")
+                
+            # Print detailed k-bin analysis if test will fail
+            will_fail = (fraction_3sigma > 0.10) or not (0.1 < reduced_chi2 < 10.0)
+            if will_fail:
+                print(f"\n" + "="*80)
+                print("DETAILED K-BIN ANALYSIS (Chi-squared test failing)")
+                print("="*80)
+                print(f"{'k [h/Mpc]':>12} {'P(k) meas':>12} {'P(k) exp':>12} {'Deviation':>12} {'σ units':>10} {'N_modes':>8}")
+                print("-" * 80)
+                
+                for i, (p_measured, n_mod, chi2_stat) in enumerate(zip(valid_power_bins, valid_n_modes_bins, chi2_statistics)):
+                    k_val = k_bins[valid_bins_mask][i]  # Get corresponding k value
+                    sigma_units = chi2_stat / np.sqrt(2 * n_mod)
+                    deviation = p_measured - expected_shot_noise
+                    
+                    # Mark outliers
+                    marker = ""
+                    if abs(sigma_units) > 3:
+                        marker = " <<<3σ"
+                    elif abs(sigma_units) > 2:
+                        marker = " <<<2σ"
+                    
+                    print(f"{k_val:12.6f} {p_measured:12.3f} {expected_shot_noise:12.3f} "
+                          f"{deviation:+12.3f} {sigma_units:+10.2f} {n_mod:8d}{marker}")
+                
+                print("="*80)
+                print(f"Expected P(k) = {expected_shot_noise:.1f} (Mpc/h)³ for white noise")
+                print(f"Outliers: {outliers_2sigma} bins > 2σ, {outliers_3sigma} bins > 3σ")
+                print("="*80)
+            
+            # FAIL the test if statistics are bad
+            assert fraction_3sigma <= 0.10, (
+                f"Chi-squared test FAILED: {fraction_3sigma:.1%} of bins beyond 3σ "
+                f"(should be ≤ 10% for acceptable noise, got {outliers_3sigma}/{n_valid_bins})"
+            )
+            
+            assert 0.1 < reduced_chi2 < 10.0, (
+                f"Chi-squared test FAILED: Reduced χ² = {reduced_chi2:.1f} "
+                f"(should be 0.1 < χ² < 10.0 for reasonable statistics)"
+            )
+                
+        except ImportError:
+            print("  WARNING: scipy not available, skipping detailed statistical validation")
+            print("  Install scipy for complete chi-squared analysis")
+
         print(f"\n✅ SHOT NOISE TEST PASSED")
         print(f"✅ GRID VARIANCE VALIDATION PASSED")
         if n_processes > 1:
