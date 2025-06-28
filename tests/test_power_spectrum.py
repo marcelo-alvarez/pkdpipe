@@ -73,6 +73,9 @@ class TestPowerSpectrumCalculator:
         """Generate random particles for testing."""
         import os
         
+        # Check debug mode
+        debug_mode = os.environ.get('PKDPIPE_DEBUG_MODE', 'false').lower() == 'true'
+        
         # Detect distributed mode
         n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
         process_id = int(os.environ.get('SLURM_PROCID', '0'))
@@ -81,7 +84,8 @@ class TestPowerSpectrumCalculator:
         total_particles = TEST_CONFIG['n_particles']
         particles_per_process = total_particles // n_processes
         
-        print(f"DEBUG: Rank {process_id}/{n_processes}: generating {particles_per_process} particles (total target: {total_particles})")
+        if debug_mode:
+            print(f"DEBUG: Rank {process_id}/{n_processes}: generating {particles_per_process} particles (total target: {total_particles})")
         
         # Generate random particles within simulation box
         np.random.seed(42 + process_id)  # Different seed per process
@@ -95,13 +99,19 @@ class TestPowerSpectrumCalculator:
         
         return particles
     
-    def test_shot_noise_power_spectrum(self, random_particles):
+    def test_comprehensive_distributed_power_spectrum(self, random_particles):
         """
-        Test power spectrum calculation for random particles (shot noise test).
+        Comprehensive distributed power spectrum validation test.
+        
+        This test combines distributed FFT validation with full statistical analysis:
+        1. Tests that distributed FFT produces correct power spectrum normalization
+        2. Validates comprehensive statistical properties (variance, chi-squared)
+        3. Tests grid statistics and density contrast calculations
+        4. Verifies both distributed FFT correctness AND statistical consistency
         
         CRITICAL TEST: This verifies that distributed FFT is working properly.
         If JAX distributed FFT fails, each process does independent FFT → ~50% amplitude.
-        If JAX distributed FFT works, we get the correct normalization.
+        If JAX distributed FFT works, we get the correct normalization AND statistics.
         """
         
         # Test configuration from centralized config
@@ -118,7 +128,7 @@ class TestPowerSpectrumCalculator:
         )
         
         print("\n" + "="*80)
-        print("DISTRIBUTED FFT VALIDATION TEST")
+        print("COMPREHENSIVE DISTRIBUTED POWER SPECTRUM VALIDATION")
         print("="*80)
         
         # Expected shot noise for random particles  
@@ -128,10 +138,57 @@ class TestPowerSpectrumCalculator:
         # Calculate power spectrum with grid statistics
         k_bins, power_spectrum, n_modes, grid_stats = calc.calculate_power_spectrum(random_particles, assignment=assignment)
         
-        # VARIANCE VALIDATION: Use grid statistics from power spectrum calculation
-        print(f"\n" + "-"*50)
-        print("GRID VARIANCE VALIDATION")
-        print("-"*50)
+        # =================================================================
+        # PART 1: DISTRIBUTED FFT VALIDATION (from TestDistributedFFT)
+        # =================================================================
+        print(f"\n" + "-"*60)
+        print("PART 1: DISTRIBUTED FFT VALIDATION")
+        print("-"*60)
+        
+        # Get weighted mean power for FFT validation
+        valid_bins = n_modes > 100
+        valid_power = power_spectrum[valid_bins]
+        valid_n_modes = n_modes[valid_bins]
+        
+        if len(valid_power) == 0:
+            pytest.fail("No valid k-bins for testing")
+        
+        weighted_mean_power = np.average(valid_power, weights=valid_n_modes)
+        ratio = weighted_mean_power / expected_shot_noise
+        
+        print(f"Measured P(k) = {weighted_mean_power:.1f} (Mpc/h)^3")
+        print(f"Expected P(k) = {expected_shot_noise:.1f} (Mpc/h)^3")
+        print(f"Ratio = {ratio:.3f}")
+        
+        # Check if we're in distributed mode
+        n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
+        if n_processes > 1:
+            print(f"\nDISTRIBUTED MODE TEST ({n_processes} processes):")
+            print(f"  Expected ratio ≈ 1.0 (if distributed FFT works)")
+            print(f"  Expected ratio ≈ 0.5 (if distributed FFT fails)")
+            print(f"  Actual ratio = {ratio:.3f}")
+            
+            # Critical test: distributed FFT should give ratio ≈ 1.0, not 0.5
+            if ratio < 0.7:
+                pytest.fail(
+                    f"DISTRIBUTED FFT FAILURE: ratio={ratio:.3f} < 0.7\n"
+                    f"This indicates independent FFTs instead of distributed FFT"
+                )
+            elif ratio > 1.3:
+                pytest.fail(f"NORMALIZATION ERROR: ratio={ratio:.3f} > 1.3")
+            else:
+                print(f"  ✅ DISTRIBUTED FFT WORKING CORRECTLY")
+        
+        # Assert FFT correctness
+        assert 0.7 < ratio < 1.3, f"Power spectrum ratio {ratio:.3f} outside expected range"
+        print(f"✅ DISTRIBUTED FFT VALIDATION PASSED")
+        
+        # =================================================================
+        # PART 2: GRID VARIANCE VALIDATION
+        # =================================================================
+        print(f"\n" + "-"*60)
+        print("PART 2: GRID VARIANCE VALIDATION")
+        print("-"*60)
         
         # Extract variance statistics from power spectrum calculation (correctly computed with domain decomposition)
         delta_mean = grid_stats['delta_mean']
@@ -176,55 +233,12 @@ class TestPowerSpectrumCalculator:
             f"Var(δ)_ratio = {variance_ratio:.3f} (should be ≈ 1.0)"
         )
         
-        # Check power spectrum results
-        valid_bins = n_modes > 100  # Only use bins with sufficient modes
-        valid_power = power_spectrum[valid_bins]
-        
-        if len(valid_power) == 0:
-            pytest.fail("No valid k-bins with sufficient modes for testing")
-        
-        # Calculate weighted mean (weight by number of modes)
-        valid_n_modes = n_modes[valid_bins]
-        weighted_mean_power = np.average(valid_power, weights=valid_n_modes)
-        
-        print(f"\nPOWER SPECTRUM RESULTS:")
-        print(f"  Weighted mean P(k): {weighted_mean_power:.1f} (Mpc/h)^3")
-        print(f"  Expected P(k): {expected_shot_noise:.1f} (Mpc/h)^3")
-        print(f"  Ratio (measured/expected): {weighted_mean_power/expected_shot_noise:.3f}")
-        
-        # CRITICAL TEST: Check if distributed FFT is working properly
-        n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
-        if n_processes > 1:
-            print(f"\nDISTRIBUTED FFT VALIDATION:")
-            print(f"  Running on {n_processes} processes")
-            print(f"  If distributed FFT works: ratio should be ≈ 1.0")
-            print(f"  If distributed FFT fails: ratio should be ≈ 0.5")
-            
-            # In distributed mode, ratio should be close to 1.0, NOT 0.5
-            ratio = weighted_mean_power / expected_shot_noise
-            if ratio < 0.7:  # Much less than expected
-                pytest.fail(
-                    f"DISTRIBUTED FFT FAILURE DETECTED:\n"
-                    f"  Measured/Expected ratio: {ratio:.3f} (should be ≈1.0)\n"
-                    f"  This indicates each process is doing independent FFT instead of distributed FFT\n"
-                    f"  Expected: {expected_shot_noise:.1f}, Got: {weighted_mean_power:.1f}"
-                )
-            elif ratio > 1.3:  # Much more than expected  
-                pytest.fail(
-                    f"POWER SPECTRUM NORMALIZATION ERROR:\n"
-                    f"  Measured/Expected ratio: {ratio:.3f} (should be ≈1.0)\n"
-                    f"  Expected: {expected_shot_noise:.1f}, Got: {weighted_mean_power:.1f}"
-                )
-            else:
-                print(f"  ✅ DISTRIBUTED FFT WORKING: ratio = {ratio:.3f} ≈ 1.0")
-        
-        # Note: Individual bin statistical validation via chi-squared test below
-        # Simple ratio test removed in favor of proper statistical analysis
-        
-        # CHI-SQUARED TOTAL VARIANCE TEST
-        print(f"\n" + "-"*50)
-        print("CHI-SQUARED TOTAL VARIANCE TEST")
-        print("-"*50)
+        # =================================================================
+        # PART 3: CHI-SQUARED TOTAL VARIANCE TEST
+        # =================================================================
+        print(f"\n" + "-"*60)
+        print("PART 3: CHI-SQUARED TOTAL VARIANCE TEST")
+        print("-"*60)
         
         # For white noise (Poisson), the total variance should follow chi-squared distribution
         # Degrees of freedom = number of independent grid cells = ngrid^3
@@ -266,9 +280,9 @@ class TestPowerSpectrumCalculator:
                 print(f"  ✅ Total variance consistent with white noise (within 95% CI)")
             else:
                 if variance_significant:
-                    print(f"  ❌ Total variance significantly deviates from white noise (p={p_value:.6f} < 0.05)")
+                    print(f"  ⚠️ Total variance significantly deviates from white noise (p={p_value:.6f} < 0.05)")
                 if not variance_within_ci:
-                    print(f"  ❌ Total variance outside 95% confidence interval")
+                    print(f"  ⚠️ Total variance outside 95% confidence interval")
             
             # Assert for test failure if variance is significantly wrong
             assert not variance_significant, (
@@ -280,10 +294,12 @@ class TestPowerSpectrumCalculator:
         except ImportError:
             print("  WARNING: scipy not available, skipping chi-squared variance test")
         
-        # CHI-SQUARED STATISTICAL VALIDATION (PER K-BIN)
-        print(f"\n" + "-"*50)
-        print("CHI-SQUARED K-BIN STATISTICAL VALIDATION")
-        print("-"*50)
+        # =================================================================
+        # PART 4: CHI-SQUARED K-BIN STATISTICAL VALIDATION
+        # =================================================================
+        print(f"\n" + "-"*60)
+        print("PART 4: CHI-SQUARED K-BIN STATISTICAL VALIDATION")
+        print("-"*60)
         
         # For shot noise, each k-bin should follow chi-squared distribution
         # P_measured ~ P_expected * χ²(N_modes) / N_modes
@@ -355,37 +371,8 @@ class TestPowerSpectrumCalculator:
             if overall_consistent:
                 print(f"  ✅ Power spectrum statistically consistent with white noise")
             else:
-                print(f"  ❌ Power spectrum shows statistical inconsistencies")
+                print(f"  ⚠️ Power spectrum shows statistical inconsistencies")
                 
-            # Print detailed k-bin analysis always for comparison purposes
-            will_fail = (fraction_3sigma > 0.10) or not (0.1 < reduced_chi2 < 10.0)
-            if True:  # Always show detailed analysis for serial vs parallel comparison
-                print(f"\n" + "="*80)
-                print("DETAILED K-BIN ANALYSIS")
-                print("="*80)
-                print(f"{'k [h/Mpc]':>12} {'P(k) meas':>12} {'P(k) exp':>12} {'Deviation':>12} {'σ units':>10} {'N_modes':>8}")
-                print("-" * 80)
-                
-                for i, (p_measured, n_mod, chi2_stat) in enumerate(zip(valid_power_bins, valid_n_modes_bins, chi2_statistics)):
-                    k_val = k_bins[valid_bins_mask][i]  # Get corresponding k value
-                    sigma_units = chi2_stat / np.sqrt(2 * n_mod)
-                    deviation = p_measured - expected_shot_noise
-                    
-                    # Mark outliers
-                    marker = ""
-                    if abs(sigma_units) > 3:
-                        marker = " <<<3σ"
-                    elif abs(sigma_units) > 2:
-                        marker = " <<<2σ"
-                    
-                    print(f"{k_val:12.6f} {p_measured:12.3f} {expected_shot_noise:12.3f} "
-                          f"{deviation:+12.3f} {sigma_units:+10.2f} {n_mod:8d}{marker}")
-                
-                print("="*80)
-                print(f"Expected P(k) = {expected_shot_noise:.1f} (Mpc/h)³ for white noise")
-                print(f"Outliers: {outliers_2sigma} bins > 2σ, {outliers_3sigma} bins > 3σ")
-                print("="*80)
-            
             # FAIL the test if statistics are bad
             assert fraction_3sigma <= 0.10, (
                 f"Chi-squared test FAILED: {fraction_3sigma:.1%} of bins beyond 3σ "
@@ -401,7 +388,17 @@ class TestPowerSpectrumCalculator:
             print("  WARNING: scipy not available, skipping detailed statistical validation")
             print("  Install scipy for complete chi-squared analysis")
 
-        print(f"\n✅ SHOT NOISE TEST PASSED")
+        # =================================================================
+        # FINAL SUMMARY
+        # =================================================================
+        print(f"\n" + "="*80)
+        print("COMPREHENSIVE TEST RESULTS SUMMARY")
+        print("="*80)
+        print(f"✅ DISTRIBUTED FFT VALIDATION PASSED")
         print(f"✅ GRID VARIANCE VALIDATION PASSED")
+        print(f"✅ CHI-SQUARED TOTAL VARIANCE PASSED")
+        print(f"✅ CHI-SQUARED K-BIN VALIDATION PASSED")
         if n_processes > 1:
-            print(f"✅ DISTRIBUTED FFT VALIDATION PASSED")
+            print(f"✅ DISTRIBUTED FFT WORKING CORRECTLY (ratio = {ratio:.3f})")
+        print(f"✅ COMPREHENSIVE DISTRIBUTED POWER SPECTRUM VALIDATION COMPLETE")
+        print("="*80)

@@ -591,13 +591,16 @@ python -m pytest tests/test_campaign.py -v      # Campaign management (20+ tests
 #### 🚀 Comprehensive Testing (RECOMMENDED)
 ```bash
 # Automated comprehensive testing - handles environment setup automatically
-./run_comprehensive_tests.sh
+./run_tests.sh
 
 # Serial mode for debugging
-./run_comprehensive_tests.sh --serial
+./run_tests.sh --serial
+
+# Enable verbose DEBUG output for troubleshooting
+./run_tests.sh --debug
 
 # Custom parameters
-./run_comprehensive_tests.sh --time=30 --ntasks=8
+./run_tests.sh --time=30 --ntasks=8
 ```
 
 #### Manual SLURM Testing (For Debugging)

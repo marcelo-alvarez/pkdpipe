@@ -277,13 +277,17 @@ class PowerSpectrumCalculator:
         # Use SLURM environment variables instead of JAX to avoid early JAX initialization
         process_id = int(os.environ.get('SLURM_PROCID', '0'))
         n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
-        print(f"DEBUG: Process {process_id} ENTERED _calculate_distributed", flush=True)
+        debug_mode = os.environ.get('PKDPIPE_DEBUG_MODE', 'false').lower() == 'true'
+        
+        if debug_mode:
+            print(f"DEBUG: Process {process_id} ENTERED _calculate_distributed", flush=True)
         
         # Use global MPI communicator
         if not _MPI_AVAILABLE:
             raise ImportError("MPI4py required for distributed mode but not available")
         comm = _MPI_COMM
-        print(f"DEBUG: Process {process_id} initialized MPI communicator", flush=True)
+        if debug_mode:
+            print(f"DEBUG: Process {process_id} initialized MPI communicator", flush=True)
         
         # Step 1: Redistribute particles based on spatial decomposition using MPI4py
         spatial_particles, y_start, y_end, y_start_ghost, y_end_ghost = redistribute_particles_mpi_simple(
@@ -689,7 +693,8 @@ class PowerSpectrumCalculator:
                 # Store global total particles for get_density_diagnostics
                 self._global_total_particles = comm.allreduce(n_particles, op=MPI.SUM)
                 
-                print(f"DEBUG: Process {comm.Get_rank()}: Global density stats - mean: {global_mean:.6e}, variance: {global_variance:.6e}")
+                if debug_mode:
+                    print(f"DEBUG: Process {comm.Get_rank()}: Global density stats - mean: {global_mean:.6e}, variance: {global_variance:.6e}")
                 
                 self._last_density_stats = {
                     'mean_density': float(global_mean),
@@ -758,6 +763,8 @@ class PowerSpectrumCalculator:
     def _store_density_diagnostics(self, density_data: np.ndarray, 
                                  delta_data: np.ndarray, n_particles: int) -> None:
         """Store density field diagnostics for analysis."""
+        # Check debug mode
+        debug_mode = os.environ.get('PKDPIPE_DEBUG_MODE', 'false').lower() == 'true'
         if hasattr(density_data, 'flatten'):
             density_flat = density_data.flatten()
         else:
@@ -824,7 +831,8 @@ class PowerSpectrumCalculator:
                 # Store global total particles for get_density_diagnostics
                 self._global_total_particles = comm.allreduce(n_particles, op=MPI.SUM)
                 
-                print(f"DEBUG: Process {comm.Get_rank()}: Global density stats - mean: {global_mean:.6e}, variance: {global_variance:.6e}")
+                if debug_mode:
+                    print(f"DEBUG: Process {comm.Get_rank()}: Global density stats - mean: {global_mean:.6e}, variance: {global_variance:.6e}")
                 
                 self._last_density_stats = {
                     'mean_density': float(global_mean),
