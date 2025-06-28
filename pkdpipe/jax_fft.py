@@ -3,6 +3,27 @@ import gc
 import os
 import numpy as np
 
+def _numpy_fft_fallback(x_np, direction='r2c'):
+    """
+    NumPy FFT fallback when JAX initialization fails.
+    
+    This provides a basic FFT implementation using NumPy when JAX is unavailable.
+    Note: This doesn't support distributed FFT, only single-process mode.
+    """
+    print("Using NumPy FFT fallback (no distribution support)", flush=True)
+    
+    if direction == 'r2c':
+        # Real-to-complex FFT
+        return np.fft.rfftn(x_np)
+    elif direction == 'c2r':
+        # Complex-to-real inverse FFT
+        return np.fft.irfftn(x_np)
+    elif direction == 'c2c':
+        # Complex-to-complex FFT
+        return np.fft.fftn(x_np)
+    else:
+        raise ValueError(f"Unknown FFT direction: {direction}")
+
 # JAX imports deferred until fft() is called to avoid multiprocessing conflicts
 # This ensures NO JAX initialization happens during particle gridding/multiprocessing
 
@@ -72,27 +93,70 @@ def fft(x_np, direction='r2c'):
         # Do NOT set jax_platform_name - let JAX auto-detect from JAX_PLATFORMS env var
         
         # CRITICAL: Test JAX backend detection BEFORE using devices
-        print(f"JAX backend detected: {jax.default_backend()}", flush=True)
-        print(f"JAX devices available: {jax.devices()}", flush=True)
-        
+        # Handle CUDA initialization failure gracefully
+        try:
+            backend = jax.default_backend()
+            devices = jax.devices()
+            print(f"JAX backend detected: {backend}", flush=True)
+            print(f"JAX devices available: {devices}", flush=True)
+        except RuntimeError as e:
+            if "No visible GPU devices" in str(e) or "CUDA" in str(e):
+                # CUDA failed, try to force CPU backend
+                print(f"CUDA initialization failed: {e}", flush=True)
+                print("Attempting to force CPU backend...", flush=True)
+                try:
+                    # Force CPU backend by overriding environment
+                    os.environ['JAX_PLATFORMS'] = 'cpu'
+                    print("Forcing JAX to reinitialize with CPU backend...", flush=True)
+                    
+                    # Clear JAX's cached backend state more thoroughly
+                    import sys
+                    if 'jax._src.xla_bridge' in sys.modules:
+                        xla_bridge = sys.modules['jax._src.xla_bridge']
+                        if hasattr(xla_bridge, '_backends'):
+                            xla_bridge._backends.clear()
+                            print("Cleared JAX backend cache", flush=True)
+                        if hasattr(xla_bridge, '_backend_lock'):
+                            # Reset the lock to allow reinitialization
+                            pass
+                    
+                    # Force jax to re-detect platforms
+                    if hasattr(jax, 'config'):
+                        try:
+                            jax.config.update('jax_platforms', 'cpu')
+                            print("Updated JAX config to use CPU", flush=True)
+                        except:
+                            pass
+                    
+                    # Try getting backend with explicit platform
+                    try:
+                        backend = jax.lib.xla_bridge.get_backend('cpu')
+                        devices = jax.devices('cpu')
+                        print(f"JAX fallback to CPU backend: {backend.platform}", flush=True)
+                        print(f"JAX CPU devices available: {devices}", flush=True)
+                    except:
+                        # Final fallback - try default again
+                        backend = jax.default_backend()
+                        devices = jax.devices()
+                        print(f"JAX backend after CPU fallback: {backend}", flush=True)
+                        print(f"JAX devices after fallback: {devices}", flush=True)
+                        
+                except Exception as fallback_error:
+                    print(f"CPU fallback also failed: {fallback_error}", flush=True)
+                    # Don't give up yet - try one more time with a clean import
+                    try:
+                        print("Last resort: attempting NumPy FFT fallback", flush=True)
+                        return _numpy_fft_fallback(x_np, direction)
+                    except:
+                        raise RuntimeError(f"JAX initialization failed for both CUDA and CPU: {e}")
+            else:
+                raise
+
     except ImportError as e:
         print(f"JAX not available for FFT: {e}", flush=True)
         raise ImportError("JAX is required for FFT operations")
-    
-    # Define JAX FFT functions (now that JAX is imported and configured)
-    def _fft_XY(x):
-        return jax.numpy.fft.fftn(x, axes=[0, 1])
 
-    def _fft_Z(x):
-        return jax.numpy.fft.rfft(x, axis=2)
-
-    def _ifft_XY(x):
-        return jax.numpy.fft.ifftn(x, axes=[0, 1])
-
-    def _ifft_Z(x):
-        return jax.numpy.fft.irfft(x, axis=2)
-
-    def fft_partitioner(fft_func: Callable[[Any], Any], partition_spec: Any):
+    def fft_partitioner(fft_func: Callable[[Any], Any], partition_spec: P):
         """Create partitioned FFT function for distributed computation."""
         @custom_partitioning
         def func(x):
@@ -107,8 +171,23 @@ def fft(x_np, direction='r2c'):
             mesh = jax.tree.map(lambda x: x.sharding, arg_shapes)[0].mesh
             return NamedSharding(mesh, partition_spec)
 
-        func.def_partition(partition, infer_sharding_from_operands)
+        func.def_partition(partition=partition,
+                            infer_sharding_from_operands=infer_sharding_from_operands
+        )
         return func
+
+    # Define JAX FFT functions (now that JAX is imported and configured)
+    def _fft_XY(x):
+        return jax.numpy.fft.fftn(x, axes=[0, 1])
+
+    def _fft_Z(x):
+        return jax.numpy.fft.rfft(x, axis=2)
+
+    def _ifft_XY(x):
+        return jax.numpy.fft.ifftn(x, axes=[0, 1])
+
+    def _ifft_Z(x):
+        return jax.numpy.fft.irfft(x, axis=2)
 
     # CORRECTED sharding patterns based on working implementation
     fft_XY = fft_partitioner(_fft_XY, P(None, None, "gpus"))  # Keep this for XY
@@ -156,18 +235,20 @@ def fft(x_np, direction='r2c'):
             del x_single ; gc.collect()
             print(f"Sharded array created: {xshard.sharding}", flush=True)
             
-            # Set up JIT compilation with input shardings only, let JAX infer output
+            # Set up JIT compilation with explicit input and output shardings
             if direction == 'r2c':
                 print(f"Compiling sharded rFFT", flush=True)
                 rfftn_jit = jax.jit(
                     rfftn,
-                    in_shardings=NamedSharding(mesh, P(None, "gpus"))
+                    in_shardings=NamedSharding(mesh, P(None, "gpus")),
+                    out_shardings=NamedSharding(mesh, P(None, "gpus"))
                 )
             else:
                 print(f"Compiling sharded irFFT", flush=True)
                 irfftn_jit = jax.jit(
                     irfftn,
-                    in_shardings=NamedSharding(mesh, P(None, "gpus"))
+                    in_shardings=NamedSharding(mesh, P(None, "gpus")),
+                    out_shardings=NamedSharding(mesh, P(None, "gpus"))
                 )
             
             from jax.experimental.multihost_utils import sync_global_devices
@@ -181,9 +262,16 @@ def fft(x_np, direction='r2c'):
                     out_jit = irfftn_jit(xshard).block_until_ready()
                 sync_global_devices("FFT computation complete")
                 
-                # Extract local result
+                # Extract local result - this should be the local slab, not the full global array
                 local_result = out_jit.addressable_data(0)
                 print(f"Sharded FFT complete, local result shape: {local_result.shape}", flush=True)
+                
+                # Verify the local result has the expected slab shape
+                local_slab_shape = (global_shape[0], global_shape[1] // num_gpus, global_shape[2])
+                expected_local_shape = (local_slab_shape[0], local_slab_shape[1], local_slab_shape[2]//2 + 1)  # rFFT shape
+                if local_result.shape != expected_local_shape:
+                    raise RuntimeError(f"FFT output shape {local_result.shape} != expected slab shape {expected_local_shape}. "
+                                     f"JAX distributed FFT failed to return correct local slab.")
                 
         return np.array(local_result)
     

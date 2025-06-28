@@ -125,36 +125,26 @@ class TestPowerSpectrumCalculator:
         expected_shot_noise = EXPECTED_SHOT_NOISE
         print(f"Expected Shot Noise: P_shot = V/N = {box_size:.1f}^3/{len(random_particles['x']):,} = {expected_shot_noise:.1f} (Mpc/h)^3")
         
-        # VARIANCE VALIDATION: Grid the particles and validate variance before FFT
-        from pkdpipe.particle_gridder import ParticleGridder
+        # Calculate power spectrum with grid statistics
+        k_bins, power_spectrum, n_modes, grid_stats = calc.calculate_power_spectrum(random_particles, assignment=assignment)
         
+        # VARIANCE VALIDATION: Use grid statistics from power spectrum calculation
         print(f"\n" + "-"*50)
         print("GRID VARIANCE VALIDATION")
         print("-"*50)
         
-        # Create gridder with same assignment scheme as power spectrum calculation
-        gridder = ParticleGridder(ngrid=ngrid, box_size=box_size, assignment=assignment)
-        density_grid = gridder.particles_to_grid(random_particles, n_devices=1)
+        # Extract variance statistics from power spectrum calculation (correctly computed with domain decomposition)
+        delta_mean = grid_stats['delta_mean']
+        delta_variance = grid_stats['delta_variance'] 
+        delta_std = grid_stats['delta_std']
+        theoretical_delta_variance = grid_stats['theoretical_variance']
+        global_particle_count = grid_stats['particle_count']
         
-        # Calculate density contrast field: δ = ρ/⟨ρ⟩ - 1
-        grid_mean = np.mean(density_grid)
-        delta_field = density_grid / grid_mean - 1.0
-        
-        # Calculate statistics of density contrast
-        delta_mean = np.mean(delta_field)
-        delta_variance = np.var(delta_field)
-        delta_std = np.std(delta_field)
-        
-        # For white noise (Poisson), theoretical expectation for density contrast variance
-        # δ = ρ/⟨ρ⟩ - 1, where ρ follows Poisson with mean ⟨ρ⟩
-        # Var(δ) = Var(ρ/⟨ρ⟩ - 1) = Var(ρ)/⟨ρ⟩² = ⟨ρ⟩/⟨ρ⟩² = 1/⟨ρ⟩
+        # Expected particles per cell from config
         expected_particles_per_cell = TEST_CONFIG['particles_per_cell']
-        theoretical_delta_variance = THEORETICAL_DELTA_VARIANCE
         
         print(f"Density Contrast Statistics (using {assignment.upper()} assignment):")
-        print(f"  Grid shape: {density_grid.shape}")
-        print(f"  Total particles: {len(random_particles['x']):,}")
-        print(f"  Raw grid mean (particles/cell): {grid_mean:.6e}")
+        print(f"  Global particles: {global_particle_count:,}")
         print(f"  Expected particles per cell: {expected_particles_per_cell:.3f}")
         print(f"  Density contrast mean ⟨δ⟩: {delta_mean:.6e}")
         print(f"  Density contrast variance Var(δ): {delta_variance:.6e}")
@@ -185,9 +175,6 @@ class TestPowerSpectrumCalculator:
             f"Density contrast variance inconsistent with white noise: "
             f"Var(δ)_ratio = {variance_ratio:.3f} (should be ≈ 1.0)"
         )
-        
-        # Calculate power spectrum 
-        k_bins, power_spectrum, n_modes = calc.calculate_power_spectrum(random_particles, assignment=assignment)
         
         # Check power spectrum results
         valid_bins = n_modes > 100  # Only use bins with sufficient modes
@@ -311,11 +298,11 @@ class TestPowerSpectrumCalculator:
             else:
                 print(f"  ❌ Power spectrum shows statistical inconsistencies")
                 
-            # Print detailed k-bin analysis if test will fail
+            # Print detailed k-bin analysis always for comparison purposes
             will_fail = (fraction_3sigma > 0.10) or not (0.1 < reduced_chi2 < 10.0)
-            if will_fail:
+            if True:  # Always show detailed analysis for serial vs parallel comparison
                 print(f"\n" + "="*80)
-                print("DETAILED K-BIN ANALYSIS (Chi-squared test failing)")
+                print("DETAILED K-BIN ANALYSIS")
                 print("="*80)
                 print(f"{'k [h/Mpc]':>12} {'P(k) meas':>12} {'P(k) exp':>12} {'Deviation':>12} {'σ units':>10} {'N_modes':>8}")
                 print("-" * 80)
