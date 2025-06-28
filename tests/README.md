@@ -34,20 +34,30 @@ python -m pytest tests/ -v
 python -m pytest tests/ --cov=pkdpipe
 ```
 
-### 🚨 SLURM Distributed Tests (Currently Broken)
+### 🚀 Comprehensive SLURM Distributed Tests (RECOMMENDED)
 ```bash
-# Comprehensive testing with MPI/GPU support - CURRENTLY FAILING
-srun -n 4 -c 32 --qos=interactive -N 1 --time=60 -C gpu -A cosmosim --gpus-per-node=4 --exclusive python -m pytest tests/ -v
+# Automated comprehensive testing - handles environment setup automatically
+./run_tests.sh
 
-# Using test script - ALSO BROKEN
-srun -n 4 -c 32 --qos=interactive -N 1 --time=60 -C gpu -A cosmosim --gpus-per-node=4 --exclusive ./run_comprehensive_tests.sh
+# Serial mode for debugging
+./run_tests.sh --serial
+
+# Enable verbose DEBUG output for troubleshooting
+./run_tests.sh --debug
+
+# Custom SLURM parameters
+./run_tests.sh --time=30 --ntasks=8
+
+# Manual SLURM testing for specific debugging
+srun -n 4 -c 32 --qos=interactive -N 1 --time=60 -C gpu -A cosmosim --gpus-per-node=4 --exclusive python -m pytest tests/ -v
 ```
 
-**⚠️ Known Issues**:
-- MPI tests crash with exit code 255
-- SLURM jobs terminated before completion
-- Multi-process execution broken
-- See `../testlog` for detailed failure logs
+**✅ Distributed Test Features**:
+- Intelligent MPI-aware test routing (serial tests run on rank 0 only)
+- Distributed FFT validation with multi-GPU support
+- Clean output with optional debug mode (`--debug`)
+- Comprehensive power spectrum statistical validation
+- Automatic environment setup and teardown
 
 ### Individual Test Suites
 ```bash

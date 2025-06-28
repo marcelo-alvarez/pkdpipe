@@ -920,23 +920,29 @@ class ParticleGridder:
         slab_height = int(y_max - y_min)
         slab_grid = np.zeros((ngrid, slab_height, ngrid), dtype=np.float32)
         
+        # Check debug mode
+        debug_mode = os.environ.get('PKDPIPE_DEBUG_MODE', 'false').lower() == 'true'
+        
         # DEBUG: Check if slab_grid initialization is valid
-        print(f"DEBUG gridder: slab_grid initialized - shape: {slab_grid.shape}, sum: {np.sum(slab_grid)}, has_nan: {np.isnan(np.sum(slab_grid))}")
+        if debug_mode:
+            print(f"DEBUG gridder: slab_grid initialized - shape: {slab_grid.shape}, sum: {np.sum(slab_grid)}, has_nan: {np.isnan(np.sum(slab_grid))}")
         
         # Convert particle positions to grid coordinates (ensure NumPy arrays)
-        print(f"DEBUG gridder: Converting {len(particles['x'])} particles, grid_spacing={self.grid_spacing}")
+        if debug_mode:
+            print(f"DEBUG gridder: Converting {len(particles['x'])} particles, grid_spacing={self.grid_spacing}")
         x_grid = np.asarray(particles['x']) / self.grid_spacing
         y_grid = np.asarray(particles['y']) / self.grid_spacing
         z_grid = np.asarray(particles['z']) / self.grid_spacing
         
         # DEBUG: Check for NaN in coordinates after conversion
-        x_has_nan = np.isnan(np.sum(x_grid))
-        y_has_nan = np.isnan(np.sum(y_grid))
-        z_has_nan = np.isnan(np.sum(z_grid))
-        print(f"DEBUG gridder: After conversion - x_has_nan: {x_has_nan}, y_has_nan: {y_has_nan}, z_has_nan: {z_has_nan}")
-        
-        if x_has_nan or y_has_nan or z_has_nan:
-            print(f"DEBUG gridder: NaN found in grid coordinates!")
+        if debug_mode:
+            x_has_nan = np.isnan(np.sum(x_grid))
+            y_has_nan = np.isnan(np.sum(y_grid))
+            z_has_nan = np.isnan(np.sum(z_grid))
+            print(f"DEBUG gridder: After conversion - x_has_nan: {x_has_nan}, y_has_nan: {y_has_nan}, z_has_nan: {z_has_nan}")
+            
+            if x_has_nan or y_has_nan or z_has_nan:
+                print(f"DEBUG gridder: NaN found in grid coordinates!")
             print(f"  particles['x'] range: [{np.min(particles['x'])}, {np.max(particles['x'])}]")
             print(f"  particles['y'] range: [{np.min(particles['y'])}, {np.max(particles['y'])}]") 
             print(f"  particles['z'] range: [{np.min(particles['z'])}, {np.max(particles['z'])}]")
@@ -974,9 +980,10 @@ class ParticleGridder:
             raise ValueError(f"Unknown assignment scheme: {self.assignment}")
         
         # DEBUG: Check final slab_grid for NaN values
-        final_sum = np.sum(slab_grid)
-        final_has_nan = np.isnan(final_sum)
-        print(f"DEBUG gridder: Final slab_grid - sum: {final_sum}, has_nan: {final_has_nan}, min: {np.min(slab_grid)}, max: {np.max(slab_grid)}")
+        if debug_mode:
+            final_sum = np.sum(slab_grid)
+            final_has_nan = np.isnan(final_sum)
+            print(f"DEBUG gridder: Final slab_grid - sum: {final_sum}, has_nan: {final_has_nan}, min: {np.min(slab_grid)}, max: {np.max(slab_grid)}")
         
         return slab_grid
     
