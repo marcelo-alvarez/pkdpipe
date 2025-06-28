@@ -376,17 +376,10 @@ class PowerSpectrumCalculator:
         delta_k_slab = fft(delta_slab, direction='r2c')  # JAX distributed FFT: spatial slab -> k-space slab
         
         # Calculate power spectrum on k-space slab  
-        # Import JAX numpy after fft() has initialized JAX
-        try:
-            import jax.numpy as jnp
-            power_3d_slab = jnp.abs(delta_k_slab)**2 * (self.volume / self.ngrid**6)
-            power_3d_np = np.array(power_3d_slab)
-            print(f"DEBUG: Process {process_id} - FFT COMPLETE (JAX path)", flush=True)
-        except:
-            # Fallback if JAX not available
-            power_3d_slab = np.abs(delta_k_slab)**2 * (self.volume / self.ngrid**6)
-            power_3d_np = power_3d_slab
-            print(f"DEBUG: Process {process_id} - FFT COMPLETE (NumPy fallback path)", flush=True)
+        # Use NumPy for power calculation to avoid additional JAX imports after FFT
+        power_3d_slab = np.abs(delta_k_slab)**2 * (self.volume / self.ngrid**6)
+        power_3d_np = power_3d_slab
+        print(f"DEBUG: Process {process_id} - FFT COMPLETE (JAX path)", flush=True)
         
         # Step 5: Create k-grid for k-space slab - convert grid coordinates to physical
         physical_y_start = y_start * self.box_size / self.ngrid  
