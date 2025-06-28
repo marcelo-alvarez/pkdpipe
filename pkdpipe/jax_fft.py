@@ -2,6 +2,7 @@ from typing import Callable, Any
 import gc
 import os
 import numpy as np
+from typing import Callable, Any
 
 def _numpy_fft_fallback(x_np, direction='r2c'):
     """
@@ -52,13 +53,16 @@ def fft(x_np, direction='r2c'):
         Local FFT result as NumPy array (converted back from JAX)
     """
     
-    # CRITICAL: Initialize JAX distributed mode FIRST, before any other JAX operations
+    # CRITICAL: Check if distributed mode is needed FIRST, before any JAX operations
     slurm_ntasks = os.environ.get('SLURM_NTASKS')
-    if slurm_ntasks and int(slurm_ntasks) > 1:
-        # Initialize JAX distributed mode BEFORE importing JAX modules
+    is_distributed = slurm_ntasks and int(slurm_ntasks) > 1
+    
+    if is_distributed:
+        # Initialize JAX distributed mode BEFORE importing ANY other JAX modules
         print("Initializing JAX distributed mode in fft()...", flush=True)
         
         try:
+            # CRITICAL: Only import jax.distributed, no other JAX modules yet
             import jax.distributed
             
             coordinator_address = os.environ.get('SLURM_STEP_NODELIST', 'localhost').split(',')[0]
@@ -66,6 +70,7 @@ def fft(x_np, direction='r2c'):
             if '[' in coordinator_address:
                 coordinator_address = coordinator_address.split('[')[0] + coordinator_address.split('[')[1].split('-')[0].replace(']', '')
             
+            # Initialize distributed mode BEFORE any other JAX operations
             jax.distributed.initialize(
                 coordinator_address=f"{coordinator_address}:63025",
                 num_processes=int(slurm_ntasks),
