@@ -1124,12 +1124,12 @@ class ParticleGridder:
             from multiprocessing import shared_memory, Process
             import numpy as np
             
-            slab_height_cells = int(round((y_max - y_min) * ngrid / self.box_size))
+            slab_height_cells = int(y_max - y_min)
             n_particles = len(particles['x'])
             
             # Create shared memory array for the result grid
             grid_shape = (ngrid, slab_height_cells, ngrid)
-            grid_size = int(np.prod(grid_shape))  # Convert to int for SharedMemory
+            grid_size = int(np.prod(grid_shape))
             
             # MEMORY OPTIMIZATION: Limit number of processes for high particle counts
             # to prevent memory explosion
@@ -1175,12 +1175,9 @@ class ParticleGridder:
                 for i, (start_idx, end_idx) in enumerate(chunk_ranges):
                     if end_idx > start_idx:  # Only start process if chunk has particles
                         particle_shm_names = {key: shm.name for key, shm in particles_shm.items()}
-                        # Convert physical coordinates to grid coordinates for worker
-                        y_min_grid = y_min * ngrid / self.box_size
-                        y_max_grid = y_max * ngrid / self.box_size
                         p = Process(target=_cic_slab_shared_worker_optimized, 
                                   args=(particle_shm_names, n_particles, start_idx, end_idx,
-                                       ngrid, self.box_size, y_min_grid, y_max_grid, 
+                                       ngrid, self.box_size, y_min, y_max, 
                                        self.assignment, grid_shm.name, grid_shape, i))
                         processes.append(p)
                         p.start()
