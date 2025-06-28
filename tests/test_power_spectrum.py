@@ -221,9 +221,68 @@ class TestPowerSpectrumCalculator:
         # Note: Individual bin statistical validation via chi-squared test below
         # Simple ratio test removed in favor of proper statistical analysis
         
-        # CHI-SQUARED STATISTICAL VALIDATION
+        # CHI-SQUARED TOTAL VARIANCE TEST
         print(f"\n" + "-"*50)
-        print("CHI-SQUARED STATISTICAL VALIDATION")
+        print("CHI-SQUARED TOTAL VARIANCE TEST")
+        print("-"*50)
+        
+        # For white noise (Poisson), the total variance should follow chi-squared distribution
+        # Degrees of freedom = number of independent grid cells = ngrid^3
+        # Test statistic: (N_grid * measured_variance) / theoretical_variance ~ χ²(N_grid)
+        n_grid_cells = ngrid**3
+        test_statistic = (n_grid_cells * delta_variance) / theoretical_delta_variance
+        
+        try:
+            from scipy import stats
+            
+            # Chi-squared test for total variance
+            # H0: variance follows expected white noise distribution
+            # Critical values for 95% confidence interval
+            chi2_lower = stats.chi2.ppf(0.025, n_grid_cells)  # 2.5th percentile
+            chi2_upper = stats.chi2.ppf(0.975, n_grid_cells)  # 97.5th percentile
+            chi2_mean = n_grid_cells  # Mean of chi-squared distribution
+            chi2_std = np.sqrt(2 * n_grid_cells)  # Standard deviation
+            
+            # Normalized test statistic (z-score)
+            z_score = (test_statistic - chi2_mean) / chi2_std
+            p_value = 2 * (1 - stats.norm.cdf(abs(z_score)))  # Two-tailed test
+            
+            print(f"Total Variance Chi-Squared Test:")
+            print(f"  Grid cells: {n_grid_cells:,}")
+            print(f"  Measured variance: {delta_variance:.6e}")
+            print(f"  Theoretical variance: {theoretical_delta_variance:.6e}")
+            print(f"  Test statistic: {test_statistic:.1f}")
+            print(f"  Expected (χ² mean): {chi2_mean:.1f}")
+            print(f"  χ² standard deviation: {chi2_std:.1f}")
+            print(f"  Z-score: {z_score:.3f}")
+            print(f"  P-value: {p_value:.6f}")
+            print(f"  95% CI: [{chi2_lower:.1f}, {chi2_upper:.1f}]")
+            
+            # Validation criteria
+            variance_within_ci = chi2_lower <= test_statistic <= chi2_upper
+            variance_significant = p_value < 0.05
+            
+            if variance_within_ci and not variance_significant:
+                print(f"  ✅ Total variance consistent with white noise (within 95% CI)")
+            else:
+                if variance_significant:
+                    print(f"  ❌ Total variance significantly deviates from white noise (p={p_value:.6f} < 0.05)")
+                if not variance_within_ci:
+                    print(f"  ❌ Total variance outside 95% confidence interval")
+            
+            # Assert for test failure if variance is significantly wrong
+            assert not variance_significant, (
+                f"Total variance chi-squared test FAILED: p-value = {p_value:.6f} < 0.05\n"
+                f"Test statistic {test_statistic:.1f} significantly deviates from expected {chi2_mean:.1f}\n"
+                f"This indicates non-white noise behavior in the density field"
+            )
+            
+        except ImportError:
+            print("  WARNING: scipy not available, skipping chi-squared variance test")
+        
+        # CHI-SQUARED STATISTICAL VALIDATION (PER K-BIN)
+        print(f"\n" + "-"*50)
+        print("CHI-SQUARED K-BIN STATISTICAL VALIDATION")
         print("-"*50)
         
         # For shot noise, each k-bin should follow chi-squared distribution

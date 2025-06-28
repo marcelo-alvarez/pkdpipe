@@ -733,8 +733,10 @@ class ParticleGridder:
         # Initialize density grid
         density_grid = np.zeros((self.ngrid, self.ngrid, self.ngrid), dtype=np.float32)
         
-        # Round to nearest grid point
-        i_coords = np.round(grid_coords).astype(int)
+        # Floor to correct grid cell for cell-centered grid points
+        # For cell-centered grids: grid_point i is at (i+0.5)*dx  
+        # Particle at position x belongs to cell floor(x/dx)
+        i_coords = np.floor(grid_coords).astype(int)
         
         # Apply periodic boundary conditions
         i_coords = i_coords % self.ngrid
@@ -1070,10 +1072,12 @@ class ParticleGridder:
         if len(x) == 0:
             return
         
-        # Round to nearest grid point
-        ix = np.round(x).astype(int) % ngrid_x
-        iy = np.round(y).astype(int)
-        iz = np.round(z).astype(int) % ngrid_z
+        # Floor to correct grid cell for cell-centered grid points
+        # For cell-centered grids: grid_point i is at (i+0.5)*dx
+        # Particle at position x belongs to cell floor(x/dx)
+        ix = np.floor(x).astype(int) % ngrid_x
+        iy = np.floor(y).astype(int)
+        iz = np.floor(z).astype(int) % ngrid_z
         
         # Check bounds for y (slab dimension)
         valid_mask = (iy >= 0) & (iy < slab_height)
