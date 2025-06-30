@@ -303,29 +303,50 @@ class PowerSpectrumCalculator:
         # Use MPI to calculate global particle count (comm already initialized above)
         self._global_total_particles = comm.allreduce(local_particle_count, op=MPI.SUM)
         print(f"Process {process_id}: Global particle count (MPI): {self._global_total_particles}, local: {local_particle_count}", flush=True)
+        
+        # MPI Barrier: Synchronize before starting gridding operations
+        try:
+            if _MPI_AVAILABLE:
+                comm = _MPI_COMM
+                print(f"Process {process_id}: SYNC POINT 1 - Before gridding operations", flush=True)
+                comm.Barrier()
+                print(f"Process {process_id}: SYNC POINT 1 - All processes ready for gridding", flush=True)
+        except ImportError:
+            pass
             
         # Step 2: Grid particles to slab - all coordinates are now in grid units
         slab_height = y_end - y_start
         ghost_slab_height = y_end_ghost - y_start_ghost
         
-        print(f"Process {process_id}: Gridding to slab {self.ngrid}x{ghost_slab_height}x{self.ngrid} (owned: {slab_height} cells)", flush=True)
+        print(f"Process {process_id}: Starting grid allocation for slab {self.ngrid}x{ghost_slab_height}x{self.ngrid} (owned: {slab_height} cells)", flush=True)
         
         # Grid particles to slab including ghost zones (all coordinates in grid units)
+        print(f"Process {process_id}: Starting CIC assignment to slab...", flush=True)
         full_slab = gridder.particles_to_slab(spatial_particles, y_start_ghost, y_end_ghost, self.ngrid)
         
-        print(f"Process {process_id}: Gridding complete, full_slab shape: {full_slab.shape}", flush=True)
+        print(f"Process {process_id}: CIC assignment complete, full_slab shape: {full_slab.shape}", flush=True)
+        
+        # MPI Barrier: Synchronize after gridding operations before memory operations
+        try:
+            if _MPI_AVAILABLE:
+                comm = _MPI_COMM
+                print(f"Process {process_id}: SYNC POINT 2 - After CIC assignment", flush=True)
+                comm.Barrier()
+                print(f"Process {process_id}: SYNC POINT 2 - All processes completed CIC assignment", flush=True)
+        except ImportError:
+            pass
         
         # === SAFE POINT: Initialize JAX after multiprocessing is complete ===
         # This is similar to how power_spectrum_real_data.py handles JAX initialization
         print(f"Process {process_id}: JAX initialized successfully after multiprocessing", flush=True)
         
-        # MPI Barrier: Wait for all processes to complete gridding before proceeding to JAX operations
+        # MPI Barrier: Wait for all processes to complete memory operations before proceeding to JAX operations
         try:
             if _MPI_AVAILABLE:
                 comm = _MPI_COMM
-                print(f"Process {process_id}: Entering MPI barrier after gridding", flush=True)
+                print(f"Process {process_id}: SYNC POINT 3 - Before JAX operations", flush=True)
                 comm.Barrier()
-                print(f"Process {process_id}: Exiting MPI barrier after gridding", flush=True)
+                print(f"Process {process_id}: SYNC POINT 3 - All processes ready for JAX operations", flush=True)
         except ImportError:
             # MPI not available, skip barrier
             pass
@@ -372,18 +393,39 @@ class PowerSpectrumCalculator:
         # Store diagnostics
         self._store_density_diagnostics(owned_slab, delta_slab, len(spatial_particles['x']))
         
+        # MPI Barrier: Synchronize before FFT operations
+        try:
+            if _MPI_AVAILABLE:
+                comm = _MPI_COMM
+                print(f"Process {process_id}: SYNC POINT 4 - Before FFT operations", flush=True)
+                comm.Barrier()
+                print(f"Process {process_id}: SYNC POINT 4 - All processes ready for FFT", flush=True)
+        except ImportError:
+            pass
+        
         # Step 4: Initialize JAX with distributed mode right before FFT
         # This ensures JAX is only initialized after all multiprocessing is complete
-        print(f"Process {process_id}: About to call FFT with delta_slab shape {delta_slab.shape}", flush=True)
+        print(f"Process {process_id}: Starting FFT with delta_slab shape {delta_slab.shape}", flush=True)
         
         # Use the fft() function which will handle JAX distributed initialization
         delta_k_slab = fft(delta_slab, direction='r2c')  # JAX distributed FFT: spatial slab -> k-space slab
+        
+        print(f"Process {process_id}: FFT complete, delta_k_slab shape {delta_k_slab.shape}", flush=True)
         
         # Calculate power spectrum on k-space slab  
         # Use NumPy for power calculation to avoid additional JAX imports after FFT
         power_3d_slab = np.abs(delta_k_slab)**2 * (self.volume / self.ngrid**6)
         power_3d_np = power_3d_slab
-        print(f"DEBUG: Process {process_id} - FFT COMPLETE (JAX path)", flush=True)
+        
+        # MPI Barrier: Synchronize after FFT before k-space operations
+        try:
+            if _MPI_AVAILABLE:
+                comm = _MPI_COMM
+                print(f"Process {process_id}: SYNC POINT 5 - After FFT, before k-space processing", flush=True)
+                comm.Barrier()
+                print(f"Process {process_id}: SYNC POINT 5 - All processes completed FFT", flush=True)
+        except ImportError:
+            pass
         
         # Step 5: Create k-grid for k-space slab - convert grid coordinates to physical
         physical_y_start = y_start * self.box_size / self.ngrid  
@@ -394,11 +436,22 @@ class PowerSpectrumCalculator:
         power_3d_corrected, k_grid_corrected = self._apply_window_correction(power_3d_np, k_grid_slab, assignment)
         print(f"DEBUG: Process {process_id} - WINDOW CORRECTION APPLIED", flush=True)
         
+        # MPI Barrier: Synchronize before power spectrum binning and reduction
+        try:
+            if _MPI_AVAILABLE:
+                comm = _MPI_COMM
+                print(f"Process {process_id}: SYNC POINT 6 - Before power spectrum binning", flush=True)
+                comm.Barrier()
+                print(f"Process {process_id}: SYNC POINT 6 - All processes ready for binning", flush=True)
+        except ImportError:
+            pass
+        
         # Step 6: Bin and reduce across processes
-        print(f"DEBUG: Process {process_id} - ABOUT TO CALL BINNING", flush=True)
+        print(f"Process {process_id}: Starting power spectrum binning and MPI reduction", flush=True)
         k_binned, power_binned, n_modes = bin_power_spectrum_distributed(
             k_grid_corrected, power_3d_corrected, self.k_bins
         )
+        print(f"Process {process_id}: Power spectrum binning complete", flush=True)
         
         return self._finalize_power_spectrum(k_binned, power_binned, n_modes, 
                                            subtract_shot_noise, self._global_total_particles)

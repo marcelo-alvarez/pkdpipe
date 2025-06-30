@@ -310,31 +310,39 @@ def calculate_power_spectrum(particles_or_data, box_size, ngrid=256, assignment=
             print(f"DEBUG: PROCESS {process_id}: actual memory before extraction: {memory_before_extraction:.2f} GB")
             
             try:
-                # MEMORY OPTIMIZATION: Extract fields progressively to minimize peak memory
-                # Extract one field at a time and immediately free original references
-                print(f"DEBUG: Extracting x field...")
-                x_data = particles_rec['x'].copy()  # Independent copy of x field
+                # MEMORY OPTIMIZATION: Data should now contain only x,y,z (velocities stripped at loading)
+                field_names = particles_rec.dtype.names
+                print(f"DEBUG: Available fields: {field_names}")
                 
-                print(f"DEBUG: Extracting y field...")
-                y_data = particles_rec['y'].copy()  # Independent copy of y field
+                if field_names == ('x', 'y', 'z'):
+                    print(f"DEBUG: ✅ Memory optimization successful - 3 position fields only")
+                    expected_fields = 3
+                elif len(field_names) == 6:
+                    print(f"DEBUG: ⚠️  Full 6-field data detected - memory optimization did not apply") 
+                    expected_fields = 6
+                else:
+                    print(f"DEBUG: ❓ Unexpected field configuration: {field_names}")
+                    expected_fields = len(field_names)
                 
-                print(f"DEBUG: Extracting z field...")
-                z_data = particles_rec['z'].copy()  # Independent copy of z field
+                # Extract coordinate field views (no copying needed)
+                print(f"DEBUG: Extracting coordinate field views...")
+                x_data = particles_rec['x']  # Direct view, no copy
+                y_data = particles_rec['y']  # Direct view, no copy  
+                z_data = particles_rec['z']  # Direct view, no copy
                 
-                # Now that we have independent copies, free all original references
-                print(f"DEBUG: Freeing original structured array and dictionary")
-                del particles_rec
-                del particles_or_data  # CRITICAL: This holds the reference in result['box0']!
+                # Free container references 
+                print(f"DEBUG: Freeing original container references")
+                del particles_or_data
                 import gc
-                gc.collect()  # Force garbage collection to free memory immediately
+                gc.collect()
                 
-                # Check memory after cleanup - should be ~12 bytes/particle (3 fields × 4 bytes)
+                # Check memory - should be ~12 bytes/particle for 3 fields or ~24 for 6 fields
                 memory_after_cleanup = process.memory_info().rss / 1024**3
                 n_particles_final = len(x_data)
-                expected_final_memory_gb = n_particles_final * 3 * 4 / 1024**3  # 3 fields × 4 bytes
-                print(f"DEBUG: PROCESS {process_id}: memory after cleanup: {memory_after_cleanup:.2f} GB")
-                print(f"DEBUG: PROCESS {process_id}: expected final memory: {expected_final_memory_gb:.2f} GB")
-                print(f"DEBUG: PROCESS {process_id}: memory reduction: {memory_before_extraction - memory_after_cleanup:.2f} GB")
+                expected_final_memory_gb = n_particles_final * expected_fields * 4 / 1024**3
+                print(f"DEBUG: PROCESS {process_id}: memory after optimization: {memory_after_cleanup:.2f} GB")
+                print(f"DEBUG: PROCESS {process_id}: expected memory ({expected_fields} fields): {expected_final_memory_gb:.2f} GB")
+                print(f"DEBUG: PROCESS {process_id}: memory change: {memory_after_cleanup - memory_before_extraction:.2f} GB")
                 
                 # CRITICAL FIX: Scale coordinates from [0,1] normalized to [0,box_size) physical units
                 # Ensure coordinates are strictly < box_size to pass validation
@@ -397,7 +405,7 @@ def calculate_power_spectrum(particles_or_data, box_size, ngrid=256, assignment=
     import time
     gridding_start = time.time()
     
-    k_bins, power_spectrum, n_modes = calc.calculate_power_spectrum(data_input, assignment=assignment)
+    k_bins, power_spectrum, n_modes, grid_stats = calc.calculate_power_spectrum(data_input, assignment=assignment)
     
     # MPI barrier after gridding to get accurate timing
     try:
@@ -524,7 +532,7 @@ def main():
                        help="Simulation variant name")
     parser.add_argument("--dataset", default="xvp", choices=["xvp", "xv", "xvh"],
                        help="Dataset type to read")
-    parser.add_argument("--ngrid", type=int, default=256,
+    parser.add_argument("--ngrid", type=int, default=512,
                        help="Grid size for power spectrum calculation")
     parser.add_argument("--assignment", default="cic", choices=["ngp", "cic", "tsc"],
                        help="Particle assignment scheme")

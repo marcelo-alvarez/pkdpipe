@@ -887,23 +887,25 @@ class ParticleGridder:
             n_particles = len(particles['x'])
             slab_height = y_max - y_min
             
-            # For small particle counts or when multiprocessing isn't beneficial, use single-threaded
+            # MEMORY FIX: Always use single-threaded for large datasets to avoid memory duplication
+            # The shared memory approach copies all particle data, doubling memory usage
+            
+            # Calculate memory cost of multiprocessing approach
+            particle_data_size = n_particles * 3 * 4  # 3 coordinates × 4 bytes each
+            
+            # If particle data is large (>4GB), avoid multiprocessing to prevent memory duplication
+            if particle_data_size > 4 * 1024**3:  # > 4GB
+                print(f"DEBUG: Large dataset ({particle_data_size / 1024**3:.1f} GB), using single-threaded gridding to avoid memory duplication")
+                return self._particles_to_slab_single_thread(particles, y_min, y_max, ngrid)
+            
+            # For smaller datasets, determine if multiprocessing is beneficial
             use_multiprocessing = n_particles > 50000 and self.n_cpu_cores > 1
             
             if not use_multiprocessing:
                 return self._particles_to_slab_single_thread(particles, y_min, y_max, ngrid)
             
-            # Determine optimal number of processes
+            # Only use multiprocessing for small datasets where memory duplication is acceptable
             n_processes = self._get_optimal_n_processes(n_particles)
-            
-            # Check memory requirements for shared array approach
-            grid_size_bytes = ngrid * slab_height * ngrid * 4  # float32
-            
-            # For very large grids, fall back to single-threaded to avoid memory issues
-            if grid_size_bytes > 8 * 1024**3:  # > 8GB
-                return self._particles_to_slab_single_thread(particles, y_min, y_max, ngrid)
-            
-            # Use shared memory array to avoid broken pipe issues
             result = self._particles_to_slab_shared_memory(particles, y_min, y_max, ngrid, n_processes)
             
             return result
@@ -915,7 +917,8 @@ class ParticleGridder:
     def _particles_to_slab_single_thread(self, particles: Dict[str, np.ndarray], 
                                         y_min: int, y_max: int, ngrid: int) -> np.ndarray:
         """
-        Single-threaded slab assignment - used for small particle counts.
+        Memory-efficient single-threaded slab assignment.
+        Processes particles in chunks to minimize memory usage.
         """
         slab_height = int(y_max - y_min)
         slab_grid = np.zeros((ngrid, slab_height, ngrid), dtype=np.float32)
@@ -923,63 +926,57 @@ class ParticleGridder:
         # Check debug mode
         debug_mode = os.environ.get('PKDPIPE_DEBUG_MODE', 'false').lower() == 'true'
         
-        # DEBUG: Check if slab_grid initialization is valid
+        n_particles = len(particles['x'])
         if debug_mode:
-            print(f"DEBUG gridder: slab_grid initialized - shape: {slab_grid.shape}, sum: {np.sum(slab_grid)}, has_nan: {np.isnan(np.sum(slab_grid))}")
+            print(f"DEBUG gridder: Memory-efficient slab assignment - {n_particles} particles, slab shape: {slab_grid.shape}")
         
-        # Convert particle positions to grid coordinates (ensure NumPy arrays)
-        if debug_mode:
-            print(f"DEBUG gridder: Converting {len(particles['x'])} particles, grid_spacing={self.grid_spacing}")
-        x_grid = np.asarray(particles['x']) / self.grid_spacing
-        y_grid = np.asarray(particles['y']) / self.grid_spacing
-        z_grid = np.asarray(particles['z']) / self.grid_spacing
+        # Process particles in chunks to minimize memory usage
+        chunk_size = min(1000000, n_particles)  # 1M particles per chunk
         
-        # DEBUG: Check for NaN in coordinates after conversion
-        if debug_mode:
-            x_has_nan = np.isnan(np.sum(x_grid))
-            y_has_nan = np.isnan(np.sum(y_grid))
-            z_has_nan = np.isnan(np.sum(z_grid))
-            print(f"DEBUG gridder: After conversion - x_has_nan: {x_has_nan}, y_has_nan: {y_has_nan}, z_has_nan: {z_has_nan}")
+        for chunk_start in range(0, n_particles, chunk_size):
+            chunk_end = min(chunk_start + chunk_size, n_particles)
             
-            if x_has_nan or y_has_nan or z_has_nan:
-                print(f"DEBUG gridder: NaN found in grid coordinates!")
-            print(f"  particles['x'] range: [{np.min(particles['x'])}, {np.max(particles['x'])}]")
-            print(f"  particles['y'] range: [{np.min(particles['y'])}, {np.max(particles['y'])}]") 
-            print(f"  particles['z'] range: [{np.min(particles['z'])}, {np.max(particles['z'])}]")
-            print(f"  grid_spacing: {self.grid_spacing}")
-            print(f"  x_grid range: [{np.min(x_grid)}, {np.max(x_grid)}]")
-            print(f"  y_grid range: [{np.min(y_grid)}, {np.max(y_grid)}]")
-            print(f"  z_grid range: [{np.min(z_grid)}, {np.max(z_grid)}]")
-        # Use unit masses if mass not provided (equal-mass particles)
-        if 'mass' in particles:
-            masses = np.asarray(particles['mass'])
-        else:
-            masses = np.ones(len(particles['x']), dtype=np.float32)
+            # Work directly with array slices - no copying
+            x_chunk = particles['x'][chunk_start:chunk_end]
+            y_chunk = particles['y'][chunk_start:chunk_end] 
+            z_chunk = particles['z'][chunk_start:chunk_end]
+            
+            # Convert to grid coordinates on-the-fly (no intermediate arrays)
+            x_grid_chunk = x_chunk / self.grid_spacing
+            y_grid_chunk = y_chunk / self.grid_spacing
+            z_grid_chunk = z_chunk / self.grid_spacing
+            
+            # Apply periodic boundary conditions
+            np.mod(x_grid_chunk, ngrid, out=x_grid_chunk)
+            np.mod(y_grid_chunk, ngrid, out=y_grid_chunk)
+            np.mod(z_grid_chunk, ngrid, out=z_grid_chunk)
+            
+            # Filter particles in this slab
+            in_slab = (y_grid_chunk >= y_min) & (y_grid_chunk < y_max)
+            n_in_slab = np.sum(in_slab)
+            
+            if n_in_slab == 0:
+                continue  # No particles in this chunk for this slab
+                
+            # Extract slab particles (create minimal temporary arrays)
+            x_slab = x_grid_chunk[in_slab]
+            y_slab = y_grid_chunk[in_slab] - y_min  # Shift to slab coordinates
+            z_slab = z_grid_chunk[in_slab]
+            
+            # Use unit masses (no mass copying)
+            mass_slab = np.ones(n_in_slab, dtype=np.float32)
+            
+            # Perform assignment on this chunk
+            if self.assignment == 'cic':
+                self._cic_assign_slab(slab_grid, x_slab, y_slab, z_slab, mass_slab)
+            elif self.assignment == 'ngp':
+                self._ngp_assign_slab(slab_grid, x_slab, y_slab, z_slab, mass_slab)
+            else:
+                raise ValueError(f"Unknown assignment scheme: {self.assignment}")
+            
+            if debug_mode and chunk_start % (10 * chunk_size) == 0:
+                print(f"DEBUG gridder: Processed chunk {chunk_start//chunk_size + 1}/{(n_particles + chunk_size - 1)//chunk_size}, particles in slab: {n_in_slab}")
         
-        # Apply periodic boundary conditions (use NumPy operations)
-        x_grid = np.mod(x_grid, ngrid)
-        y_grid = np.mod(y_grid, ngrid)
-        z_grid = np.mod(z_grid, ngrid)
-        
-        # Filter particles that fall within this slab (including ghosts)
-        in_slab = (y_grid >= y_min) & (y_grid < y_max)
-        if not np.any(in_slab):
-            return slab_grid
-        
-        x_slab = x_grid[in_slab]
-        y_slab = y_grid[in_slab] - y_min  # Shift to slab coordinates
-        z_slab = z_grid[in_slab]
-        mass_slab = masses[in_slab]
-        
-        # Perform mass assignment on slab
-        if self.assignment == 'cic':
-            self._cic_assign_slab(slab_grid, x_slab, y_slab, z_slab, mass_slab)
-        elif self.assignment == 'ngp':
-            self._ngp_assign_slab(slab_grid, x_slab, y_slab, z_slab, mass_slab)
-        else:
-            raise ValueError(f"Unknown assignment scheme: {self.assignment}")
-        
-        # DEBUG: Check final slab_grid for NaN values
         if debug_mode:
             final_sum = np.sum(slab_grid)
             final_has_nan = np.isnan(final_sum)
