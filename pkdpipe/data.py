@@ -289,11 +289,21 @@ class DataProcessor:
     @staticmethod
     def cull_shift_reshape(vars, data, shift,
                           bounds):
-        """Cull, shift, and reshape data based on variables and bounds."""
+        """Cull, shift, and reshape data based on variables and bounds.
+        MEMORY OPTIMIZATION: Extract only position coordinates (x,y,z) for power spectrum analysis."""
         if data.size == 0:
             return np.array([]).reshape(len(vars), 0)
         
         cdata = np.copy(data)
+        
+        # MEMORY OPTIMIZATION: Use only position coordinates to minimize memory usage
+        position_vars = ['x', 'y', 'z']
+        if set(position_vars).issubset(vars) and len(vars) > 3:
+            active_vars = position_vars
+            print(f"🚀 MEMORY OPTIMIZATION: Using only position fields {active_vars} from {vars}")
+            print(f"   Memory savings: {len(vars)} → {len(active_vars)} fields ({100*(1-len(active_vars)/len(vars)):.0f}% reduction)")
+        else:
+            active_vars = vars
         
         # Apply shifts
         for var in ['x', 'y', 'z']:
@@ -301,7 +311,7 @@ class DataProcessor:
                 cdata[var] += shift[var]
         
         # Apply spatial bounds
-        if all(var in vars for var in ['x', 'y', 'z']):
+        if all(var in active_vars for var in ['x', 'y', 'z']):
             mask = ((cdata['x'] > bounds[0][0]) & (cdata['x'] <= bounds[0][1]) &
                    (cdata['y'] > bounds[1][0]) & (cdata['y'] <= bounds[1][1]) &
                    (cdata['z'] > bounds[2][0]) & (cdata['z'] <= bounds[2][1]))
@@ -313,14 +323,14 @@ class DataProcessor:
         else:
             mask = np.ones(len(cdata), dtype=bool)
         
-        # Extract and reshape selected data
+        # Extract and reshape selected data - only position coordinates
         try:
             # Check if any particles pass the mask
             if not np.any(mask):
-                return np.array([]).reshape(len(vars), 0)
+                return np.array([]).reshape(len(active_vars), 0)
                 
-            result = np.concatenate([cdata[var][mask] for var in vars])
-            return result.reshape((len(vars), -1))
+            result = np.concatenate([cdata[var][mask] for var in active_vars])
+            return result.reshape((len(active_vars), -1))
         except KeyError as e:
             raise ValueError(f"Variable {e} not found in data")
 
