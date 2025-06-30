@@ -456,7 +456,7 @@ def default_k_bins(ngrid: int, box_size: float) -> np.ndarray:
     k_max = k_nyquist
     
     # Number of bins - use fewer bins for small grids
-    n_bins = min(20, ngrid // 2)  
+    n_bins = min(80, ngrid // 2)  
     
     # Ensure we have at least a few bins
     if n_bins < 5:
