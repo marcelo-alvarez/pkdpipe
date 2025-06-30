@@ -532,7 +532,7 @@ def main():
                        help="Simulation variant name")
     parser.add_argument("--dataset", default="xvp", choices=["xvp", "xv", "xvh"],
                        help="Dataset type to read")
-    parser.add_argument("--ngrid", type=int, default=512,
+    parser.add_argument("--ngrid", type=int, default=256,
                        help="Grid size for power spectrum calculation")
     parser.add_argument("--assignment", default="cic", choices=["ngp", "cic", "tsc"],
                        help="Particle assignment scheme")
