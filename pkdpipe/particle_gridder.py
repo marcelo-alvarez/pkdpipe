@@ -1299,9 +1299,6 @@ def _cic_slab_shared_worker_optimized(particle_shm_names, n_particles, start_idx
         grid_shm = shared_memory.SharedMemory(name=grid_shm_name)
         shared_grid = np.ndarray(grid_shape, dtype=np.float32, buffer=grid_shm.buf)
         
-        # Create local grid for this worker - use same shape as shared grid
-        local_grid = np.zeros(grid_shape, dtype=np.float32)
-        
         # Extract particle chunk using index range (no memory copying!)
         if end_idx > start_idx:
             x_chunk = particle_arrays['x'][start_idx:end_idx]
@@ -1329,18 +1326,14 @@ def _cic_slab_shared_worker_optimized(particle_shm_names, n_particles, start_idx
                 z_slab = z_grid[in_slab]
                 mass_slab = mass_chunk[in_slab]
                 
-                # Perform assignment on local grid
+                # Perform assignment directly on the shared grid
                 if assignment == 'cic':
-                    _cic_assign_slab_worker(local_grid, x_slab, y_slab, z_slab, mass_slab)
+                    _cic_assign_slab_worker(shared_grid, x_slab, y_slab, z_slab, mass_slab)
                 elif assignment == 'ngp':
-                    _ngp_assign_slab_worker(local_grid, x_slab, y_slab, z_slab, mass_slab)
+                    _ngp_assign_slab_worker(shared_grid, x_slab, y_slab, z_slab, mass_slab)
                 elif assignment == 'tsc':
                     # TSC not implemented for slab workers yet, fall back to CIC
-                    _cic_assign_slab_worker(local_grid, x_slab, y_slab, z_slab, mass_slab)
-        
-        # Atomically add local grid to shared grid
-        # Note: This isn't truly atomic, but race conditions are unlikely with spatial locality
-        shared_grid += local_grid
+                    _cic_assign_slab_worker(shared_grid, x_slab, y_slab, z_slab, mass_slab)
         
     finally:
         # Close shared memory connections (but don't unlink - main process will do that)
