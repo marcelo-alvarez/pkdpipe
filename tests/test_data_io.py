@@ -251,46 +251,73 @@ class TestDataIO:
         print(f"Multiprocessing consistency: {len(single_data)} particles identical")
     
     def test_different_datasets(self, test_param_file):
-        """Test different dataset types (xv vs xvp)."""
+        """Test different dataset types ('xp' vs 'xvp')."""
         data = Data(param_file=test_param_file, nproc=2, verbose=False)
         bbox = [[-200, 200], [-200, 200], [-200, 200]]
         
-        # Test xvp dataset for comparison (since xv may not be implemented)
-        # Use the same dataset but check field differences in processing
-        particles_xv = data.fetch_data(
+        # Test xp dataset (positions only)
+        particles_xp = data.fetch_data(
             bbox=bbox,
-            dataset='xvp',
+            dataset='xp',   # 3 fields: x,y,z
             filetype='tps',
             lightcone=False,
             redshifts=[0.0]
         )
         
-        # Test xvp dataset (with potential)
+        # Test xvp dataset (positions + velocities)
         particles_xvp = data.fetch_data(
             bbox=bbox,
-            dataset='xvp', 
+            dataset='xvp',  # 6 fields: x,y,z,vx,vy,vz
             filetype='tps',
             lightcone=False,
             redshifts=[0.0]
         )
         
-        xv_data = particles_xv["box0"]
+        xp_data = particles_xp["box0"]
         xvp_data = particles_xvp["box0"]
         
-        # Check field consistency (both should have same fields for this test)
-        xv_fields = set(xv_data.dtype.names)
-        xvp_fields = set(xvp_data.dtype.names)
+        # Verify field counts
+        assert len(xp_data.dtype.names) == 3, f"'xp' should have 3 fields, got {len(xp_data.dtype.names)}"
+        assert len(xvp_data.dtype.names) == 6, f"'xvp' should have 6 fields, got {len(xvp_data.dtype.names)}"
         
-        # Common fields should exist in both
-        common_fields = ['x', 'y', 'z', 'vx', 'vy', 'vz']
-        for field in common_fields:
-            assert field in xv_fields, f"Missing {field} in dataset"
-            assert field in xvp_fields, f"Missing {field} in dataset"
+        # Verify field contents
+        assert set(xp_data.dtype.names) == {'x', 'y', 'z'}, f"'xp' fields: {xp_data.dtype.names}"
+        assert set(xvp_data.dtype.names) == {'x', 'y', 'z', 'vx', 'vy', 'vz'}, f"'xvp' fields: {xvp_data.dtype.names}"
         
-        print(f"Dataset fields: {sorted(xv_fields)}")
+        print(f"Dataset fields: ['xp': {sorted(xp_data.dtype.names)}, 'xvp': {sorted(xvp_data.dtype.names)}]")
         
         # Test that we get the same number of particles
-        assert len(xv_data) == len(xvp_data), "Different datasets should return same particle count for same bbox"
+        assert len(xp_data) == len(xvp_data), "Different datasets should return same particle count for same bbox"
+    
+    def test_xp_dataset_specification(self, test_param_file):
+        """Test that 'xp' dataset returns only position fields."""
+        data = Data(param_file=test_param_file, verbose=False)
+        bbox = [[-200, 200], [-200, 200], [-200, 200]]
+        
+        particles = data.fetch_data(
+            bbox=bbox,
+            dataset='xp',  # Request positions only
+            filetype='tps',
+            lightcone=False,
+            redshifts=[0.0]
+        )
+        
+        particle_data = particles["box0"]
+        expected_fields = ['x', 'y', 'z']
+        
+        # Should have exactly 3 fields
+        assert len(particle_data.dtype.names) == 3, f"'xp' should have exactly 3 fields, got {len(particle_data.dtype.names)}: {particle_data.dtype.names}"
+        
+        # Should have position fields
+        for field in expected_fields:
+            assert field in particle_data.dtype.names, f"Missing position field: {field}"
+        
+        # Should NOT have velocity fields  
+        velocity_fields = ['vx', 'vy', 'vz']
+        for field in velocity_fields:
+            assert field not in particle_data.dtype.names, f"'xp' dataset should not have velocity field: {field}"
+        
+        print(f"'xp' dataset fields validated: {sorted(particle_data.dtype.names)}")
     
     def test_multiple_redshifts(self, test_param_file):
         """Test fetching data at multiple redshifts (snapshot mode)."""

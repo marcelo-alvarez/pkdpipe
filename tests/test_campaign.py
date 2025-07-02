@@ -26,6 +26,7 @@ from pkdpipe.campaign import (
 from pkdpipe.config import COSMOLOGY_PRESETS, SIMULATION_PRESETS
 
 
+@pytest.mark.serial_only
 class TestSimulationVariant:
     """Test the SimulationVariant dataclass."""
     
@@ -66,6 +67,7 @@ class TestSimulationVariant:
             )
 
 
+@pytest.mark.serial_only
 class TestCampaignConfig:
     """Test the CampaignConfig class."""
     
@@ -152,6 +154,7 @@ class TestCampaignConfig:
             CampaignConfig.from_yaml("nonexistent.yaml")
 
 
+@pytest.mark.serial_only
 class TestCampaign:
     """Test the Campaign class."""
     
@@ -322,6 +325,7 @@ class TestCampaign:
             assert running[0].name == "variant2"
 
 
+@pytest.mark.serial_only
 class TestCampaignCLI:
     """Test the campaign CLI functionality."""
     
@@ -387,6 +391,7 @@ class TestCampaignCLI:
             assert result == 0
 
 
+@pytest.mark.serial_only
 class TestCosmologyPresets:
     """Test the cosmology presets for campaign."""
     
@@ -428,6 +433,7 @@ class TestCosmologyPresets:
         assert "scalar field dark energy" in phicdm["description"]
 
 
+@pytest.mark.serial_only
 class TestSimulationPresets:
     """Test the simulation presets for summer campaign."""
     
