@@ -289,21 +289,14 @@ class DataProcessor:
     @staticmethod
     def cull_shift_reshape(vars, data, shift,
                           bounds):
-        """Cull, shift, and reshape data based on variables and bounds.
-        MEMORY OPTIMIZATION: Extract only position coordinates (x,y,z) for power spectrum analysis."""
+        """Cull, shift, and reshape data based on variables and bounds."""
         if data.size == 0:
             return np.array([]).reshape(len(vars), 0)
         
         cdata = np.copy(data)
         
-        # MEMORY OPTIMIZATION: Use only position coordinates to minimize memory usage
-        position_vars = ['x', 'y', 'z']
-        if set(position_vars).issubset(vars) and len(vars) > 3:
-            active_vars = position_vars
-            print(f"🚀 MEMORY OPTIMIZATION: Using only position fields {active_vars} from {vars}")
-            print(f"   Memory savings: {len(vars)} → {len(active_vars)} fields ({100*(1-len(active_vars)/len(vars)):.0f}% reduction)")
-        else:
-            active_vars = vars
+        # Use all requested variables from dataset specification
+        active_vars = vars
         
         # Apply shifts
         for var in ['x', 'y', 'z']:
