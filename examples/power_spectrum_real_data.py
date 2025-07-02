@@ -530,7 +530,7 @@ def main():
                        help="Path to campaign directory")
     parser.add_argument("--variant", default="lcdm-validation",
                        help="Simulation variant name")
-    parser.add_argument("--dataset", default="xvp", choices=["xvp", "xv", "xvh"],
+    parser.add_argument("--dataset", default="xp", choices=["xp", "xvp", "xvh"],
                        help="Dataset type to read")
     parser.add_argument("--ngrid", type=int, default=256,
                        help="Grid size for power spectrum calculation")
