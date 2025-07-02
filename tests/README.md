@@ -22,7 +22,7 @@ This directory contains comprehensive tests for the pkdpipe library, covering al
 
 ## Running Tests
 
-### All Tests
+### Serial Tests (Recommended)
 ```bash
 # From project root
 python -m pytest tests/
@@ -33,6 +33,31 @@ python -m pytest tests/ -v
 # With coverage report
 python -m pytest tests/ --cov=pkdpipe
 ```
+
+### Comprehensive SLURM Distributed Tests (RECOMMENDED)
+```bash
+# Automated comprehensive testing - handles environment setup automatically
+./run_tests.sh
+
+# Serial mode for debugging
+./run_tests.sh --serial
+
+# Enable verbose DEBUG output for troubleshooting
+./run_tests.sh --debug
+
+# Custom SLURM parameters
+./run_tests.sh --time=30 --ntasks=8
+
+# Manual SLURM testing for specific debugging
+srun -n 4 -c 32 --qos=interactive -N 1 --time=60 -C gpu -A cosmosim --gpus-per-node=4 --exclusive python -m pytest tests/ -v
+```
+
+**✅ Distributed Test Features**:
+- Intelligent MPI-aware test routing (serial tests run on rank 0 only)
+- Distributed FFT validation with multi-GPU support
+- Clean output with optional debug mode (`--debug`)
+- Comprehensive power spectrum statistical validation
+- Automatic environment setup and teardown
 
 ### Individual Test Suites
 ```bash

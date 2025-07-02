@@ -24,3 +24,26 @@ Homepage = "http://github.com/marcelo-alvarez/pkdpipe"
 [project.scripts]
 pkdpipe-create = "pkdpipe.cli:create"
 pkdpipe-campaign = "pkdpipe.campaign_cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--strict-markers",
+    "--strict-config", 
+    "-ra",
+]
+markers = [
+    "distributed: mark test as requiring distributed execution across multiple processes/GPUs",
+    "serial_only: mark test as requiring serial execution only (file I/O conflicts in parallel)",
+    "slow: mark test as slow running",
+    "gpu: mark test as requiring GPU hardware",
+    "mpi: mark test as requiring MPI functionality",
+]
+filterwarnings = [
+    "ignore::UserWarning",
+    "ignore::RuntimeWarning", 
+    "ignore::DeprecationWarning",
+]
