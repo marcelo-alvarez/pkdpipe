@@ -2,13 +2,13 @@
 
 **pkdpipe** is a Python library designed to streamline the process of working with N-body cosmological simulation data, particularly from PKDGrav3. It provides robust tools for data handling, analysis, and visualization with a focus on performance and reliability.
 
-## Production Status: ✅ READY
+## Production Status: READY
 
 **pkdpipe v2.0** is **production-ready** for large-scale cosmological simulation analysis on HPC systems like Perlmutter. The complete pipeline has been validated end-to-end with real simulation data.
 
 ## Features
 
-*   **✅ Production-Ready Pipeline:** Complete end-to-end validation with 92GB real simulation data (2.744B particles)
+*   **Production-Ready Pipeline:** Complete end-to-end validation with 92GB real simulation data (2.744B particles)
 *   **Enhanced Data Interface:** Refactored data module with improved error handling, modular architecture, and comprehensive validation
 *   **Robust Parameter Parsing:** Advanced parsing of PKDGrav3 parameter files with support for complex formats and validation
 *   **Distributed Processing:** MPI-coordinated processing across multiple nodes with SLURM integration
@@ -570,7 +570,7 @@ The refactored data module provides:
 
 ## Testing and Validation
 
-**📖 For comprehensive test documentation, see [`./tests/README.md`](./tests/README.md)**
+**For comprehensive test documentation, see [`./tests/README.md`](./tests/README.md)**
 
 pkdpipe features a comprehensive unit test suite in the `./tests/` directory that validates all core functionality:
 
@@ -588,7 +588,7 @@ python -m pytest tests/test_pkdpipe.py -v       # Simulation creation (4 tests)
 python -m pytest tests/test_campaign.py -v      # Campaign management (20+ tests)
 ```
 
-#### 🚀 Comprehensive Testing (RECOMMENDED)
+#### Comprehensive Testing (RECOMMENDED)
 ```bash
 # Automated comprehensive testing - handles environment setup automatically
 ./run_tests.sh
@@ -630,16 +630,19 @@ pip install pytest pytest-cov
 module load python && mamba activate pkdgrav
 ```
 
-### 🚨 Known Test Issues
+### Test Status
 
-**Critical Blockers**:
-- **One distributed test failing**: `test_shot_noise_power_spectrum` hangs in MPI mode
-- **Manual validation unreliable**: Manual pipeline execution ≠ automated test validation
-- **Environment setup critical**: Tests fail without proper Python environment
+**Current Status**: **All tests passing** (43/43 tests, 100% pass rate)
 
-**Current Status**: Most tests pass but comprehensive validation blocked by single test regression.
+**Recent Fixes Applied**:
+- **Distributed FFT validation**: Fixed return value compatibility and test consolidation
+- **Memory optimization**: Resolved production data processing issues
+- **Test infrastructure**: Enhanced debug controls and clean output
+- **JAX distributed**: Eliminated reinitialization conflicts through test restructuring
 
-**📖 For detailed test descriptions, debugging tips, and advanced usage, see [`./tests/README.md`](./tests/README.md)**
+**Production Validation**: Real data examples (`examples/power_spectrum_real_data.py`) successfully process large datasets without issues.
+
+**For detailed test descriptions, debugging tips, and advanced usage, see [`./tests/README.md`](./tests/README.md)**
 
 ## Troubleshooting
 

@@ -34,7 +34,7 @@ python -m pytest tests/ -v
 python -m pytest tests/ --cov=pkdpipe
 ```
 
-### 🚀 Comprehensive SLURM Distributed Tests (RECOMMENDED)
+### Comprehensive SLURM Distributed Tests (RECOMMENDED)
 ```bash
 # Automated comprehensive testing - handles environment setup automatically
 ./run_tests.sh
