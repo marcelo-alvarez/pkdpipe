@@ -10,6 +10,9 @@ from .campaign import Campaign, CampaignConfig, SimulationVariant, CampaignStatu
 from .config import PkdpipeConfigError, EnvironmentVariableError, DirectoryError, TemplateError, JobSubmissionError
 from .cli import parsecommandline, create
 from .campaign_cli import main as campaign_cli_main
+from .data import Data
+from .analysis import analyze_results, validate_power_spectrum
+from .utils import find_simulation_data, setup_environment, generate_synthetic_particle_data
 
 __all__ = [
     'Simulation',
@@ -26,5 +29,11 @@ __all__ = [
     'JobSubmissionError',
     'parsecommandline',
     'create',
-    'campaign_cli_main'
+    'campaign_cli_main',
+    'Data',
+    'analyze_results',
+    'validate_power_spectrum',
+    'find_simulation_data',
+    'setup_environment',
+    'generate_synthetic_particle_data'
 ]
