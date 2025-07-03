@@ -1121,6 +1121,69 @@ class Data:
             'zoutput': self.params.zoutput
         }
 
+    def load_simulation_data(self, snapshot_file, dataset_type='xvp', 
+                           auto_bbox=True, bbox=None):
+        """
+        High-level interface for loading simulation data from a snapshot file.
+        
+        This method provides a simplified interface that automatically handles
+        parameter file discovery, bounding box calculation, and data loading.
+        
+        Args:
+            snapshot_file: Path to the snapshot file 
+            dataset_type: Type of dataset to load ('xvp', 'xp', etc.)
+            auto_bbox: If True, automatically compute bounding box from simulation parameters
+            bbox: Manual bounding box override (ignored if auto_bbox=True)
+            
+        Returns:
+            Tuple of (particle_data, box_size, simulation_parameters)
+            
+        Raises:
+            FileNotFoundError: If snapshot file or parameter file not found
+            ValueError: If dataset_type is invalid
+        """
+        from pathlib import Path
+        import os
+        
+        snapshot_path = Path(snapshot_file)
+        if not snapshot_path.exists():
+            raise FileNotFoundError(f"Snapshot file not found: {snapshot_file}")
+        
+        # Get process ID for logging
+        process_id = int(os.environ.get('SLURM_PROCID', '0'))
+        
+        # Get simulation parameters
+        sim_params = self.get_simulation_parameters()
+        box_size = sim_params.get('dBoxSize', sim_params.get('box_size', 1000.0))
+        
+        # Compute bounding box
+        if auto_bbox:
+            # Use proper bounding box from simulation parameters
+            bbox = [[0, box_size], [0, box_size], [0, box_size]]
+        elif bbox is None:
+            # Fallback to large bounding box
+            bbox = [[-1000, 1000], [-1000, 1000], [-1000, 1000]]
+        
+        if process_id == 0:
+            print(f"Loading simulation data from: {snapshot_path.name}")
+            print(f"Box size: {box_size:.1f} Mpc/h")
+            print(f"Bounding box: {bbox}")
+            print(f"Dataset: {dataset_type}")
+        
+        # Load particle data
+        result = self.fetch_data(
+            bbox=bbox,
+            dataset=dataset_type,
+            filetype='tps',
+            lightcone=False,
+            redshifts=[0.0]
+        )
+        
+        if process_id == 0:
+            print(f"Data loading completed successfully")
+        
+        return result, box_size, sim_params
+
     def _parallel_chunked_io_single_file(self, step, bbox, dprops, format_info, redshift, slurm_info):
         """
         Enhanced I/O for single file: Each SLURM process spawns multiple workers for chunk reading.
