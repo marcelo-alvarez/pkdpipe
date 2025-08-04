@@ -5,6 +5,7 @@ import subprocess
 from string import Template
 from typing import Dict, Any, Union, Optional
 import pathlib
+from pathlib import Path
 
 from .cosmology import Cosmology
 from .cli import parsecommandline
@@ -666,6 +667,9 @@ class Simulation:
         try:
             paths = self._setup_directories_and_paths()
             
+            # Store paths for later use by analysis methods
+            self._paths = paths
+            
             self._generate_cosmology_transfer_file(self.params, paths["transferfile"])
             
             self._generate_parameter_file(paths)
@@ -683,3 +687,187 @@ class Simulation:
         except Exception as e:
             print(f"An unexpected error occurred during simulation creation: {e}")
             return None
+    
+    def get_analysis_metadata(self) -> Dict[str, Any]:
+        """
+        Extract metadata needed for power spectrum analysis.
+        
+        Returns:
+            Dict[str, Any]: Dictionary containing simulation metadata for analysis,
+                          including box size, grid size, parameter file path, 
+                          output directory, cosmology parameters, and run directory.
+        """
+        return {
+            'box_size': self.params.get('dBoxSize'),
+            'ngrid': self.params.get('nGrid'),
+            'parameter_file': self.get_parameter_file_path(),
+            'output_directory': self.get_output_directory(), 
+            'cosmology_params': {
+                'h': self.params.get('effective_h'),
+                'omegam': self.params.get('effective_omegam'),
+                'omegal': self.params.get('effective_omegal'),
+                'sigma8': self.params.get('effective_sigma8'),
+                'ns': self.params.get('effective_ns'),
+                'w0': self.params.get('effective_w0'),
+                'wa': self.params.get('effective_wa')
+            },
+            'run_directory': self.params.get('rundir'),
+            'job_name': self.params.get('jobname_actual')
+        }
+    
+    def get_parameter_file_path(self) -> Optional[str]:
+        """
+        Get the path to the simulation parameter file.
+        
+        Returns:
+            Optional[str]: Path to the .par file if it exists, None otherwise.
+        """
+        if hasattr(self, '_paths') and 'parfile' in self._paths:
+            return str(self._paths['parfile'])
+        
+        # Fallback: construct expected path
+        job_name = self.params.get('jobname_actual')
+        if job_name:
+            run_dir = Path(self.params.get('rundir', '.'))
+            par_file = run_dir / job_name / f"{job_name}.par"
+            if par_file.exists():
+                return str(par_file)
+        
+        return None
+    
+    def get_output_directory(self) -> Optional[str]:
+        """
+        Get the simulation output directory path.
+        
+        Returns:
+            Optional[str]: Path to the output directory if it exists, None otherwise.
+        """
+        if hasattr(self, '_paths') and 'ach_out_name_effective' in self._paths:
+            job_name = self.params.get('jobname_actual')
+            return f"{self._paths['ach_out_name_effective']}/output/{job_name}"
+        
+        # Fallback: construct expected path
+        job_name = self.params.get('jobname_actual')
+        if job_name:
+            if self.params.get('scratch', False):
+                base_dir = Path(self.params.get('scrdir', '.'))
+            else:
+                base_dir = Path(self.params.get('rundir', '.'))
+            
+            output_dir = base_dir / job_name / "output" / job_name
+            if output_dir.exists():
+                return str(output_dir)
+        
+        return None
+    
+    def find_final_snapshot(self) -> Optional[Path]:
+        """
+        Find the final snapshot file for analysis.
+        
+        Returns:
+            Optional[Path]: Path to the most recent snapshot file, None if not found.
+        """
+        output_dir = self.get_output_directory()
+        if not output_dir or not Path(output_dir).exists():
+            return None
+        
+        output_path = Path(output_dir)
+        
+        # Look for snapshot files with common extensions
+        snapshot_patterns = ['*.tps', '*.lcp', '*.fof']
+        snapshot_files = []
+        
+        for pattern in snapshot_patterns:
+            snapshot_files.extend(output_path.glob(pattern))
+        
+        if not snapshot_files:
+            return None
+        
+        # Return the most recently modified file
+        return max(snapshot_files, key=lambda f: f.stat().st_mtime)
+    
+    @classmethod
+    def load_from_run_directory(cls, run_dir: str) -> 'Simulation':
+        """
+        Load simulation instance from existing run directory.
+        
+        Args:
+            run_dir (str): Path to the simulation run directory.
+            
+        Returns:
+            Simulation: A simulation instance with parameters loaded from the run directory.
+            
+        Raises:
+            ValueError: If the run directory doesn't exist or parameter file not found.
+            FileNotFoundError: If required files are missing.
+        """
+        run_path = Path(run_dir)
+        if not run_path.exists():
+            raise ValueError(f"Run directory does not exist: {run_dir}")
+        
+        # Try to find parameter file
+        par_files = list(run_path.glob('*.par'))
+        if not par_files:
+            raise FileNotFoundError(f"No parameter file found in run directory: {run_dir}")
+        
+        par_file = par_files[0]  # Use first .par file found
+        job_name = par_file.stem
+        
+        # Parse basic parameters from directory structure and naming
+        params = {
+            'jobname_actual': job_name,
+            'rundir': str(run_path.parent),
+            'jobname_template': job_name,  # Use actual name as template
+        }
+        
+        # Try to extract parameters from .par file if possible
+        try:
+            with open(par_file, 'r') as f:
+                par_content = f.read()
+                
+            # Extract key parameters from .par file
+            for line in par_content.split('\n'):
+                line = line.strip()
+                if line.startswith('nGrid'):
+                    params['nGrid'] = int(line.split()[-1])
+                elif line.startswith('dBoxSize'):
+                    params['dBoxSize'] = float(line.split()[-1])
+                elif line.startswith('dRedFrom'):
+                    params['dRedFrom'] = float(line.split()[-1])
+                elif line.startswith('iLPT'):
+                    params['iLPT'] = int(line.split()[-1])
+                    
+        except Exception as e:
+            print(f"Warning: Could not parse parameter file {par_file}: {e}")
+            # Set reasonable defaults
+            params.update({
+                'nGrid': 256,
+                'dBoxSize': 1000.0,
+                'dRedFrom': 49.0,
+                'iLPT': 2
+            })
+        
+        # Set other required defaults
+        params.update({
+            'nodes': 1,
+            'cpupert': 32,
+            'gpupern': 4,
+            'scrdir': '/tmp',
+            'simname': 'loaded_simulation',
+            'cosmo': 'planck2018',
+            'scratch': False,
+            'dRedTo': '0.0',
+            'nSteps': '100',
+            'iOutInterval': 10
+        })
+        
+        # Create simulation instance
+        simulation = cls(params=params)
+        
+        # Store paths for metadata extraction
+        simulation._paths = {
+            'parfile': par_file,
+            'ach_out_name_effective': str(run_path)
+        }
+        
+        return simulation
