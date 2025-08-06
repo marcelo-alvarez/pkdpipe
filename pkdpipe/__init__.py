@@ -13,6 +13,7 @@ from .campaign_cli import main as campaign_cli_main
 from .data import Data
 from .analysis import analyze_results, validate_power_spectrum
 from .utils import find_simulation_data, setup_environment, generate_synthetic_particle_data
+from .power_spectrum_analysis import PowerSpectrumAnalysis, PowerSpectrumConfig, PowerSpectrumResults
 
 __all__ = [
     'Simulation',
@@ -35,5 +36,8 @@ __all__ = [
     'validate_power_spectrum',
     'find_simulation_data',
     'setup_environment',
-    'generate_synthetic_particle_data'
+    'generate_synthetic_particle_data',
+    'PowerSpectrumAnalysis',
+    'PowerSpectrumConfig',
+    'PowerSpectrumResults'
 ]
