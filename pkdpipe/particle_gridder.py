@@ -70,7 +70,7 @@ def _cic_worker_shared_memory(args):
         density_grid = np.zeros((ngrid, ngrid, ngrid), dtype=np.float32)
         
         # Get integer grid coordinates (lower-left corner of cell)
-        i_coords = np.floor(grid_coords).astype(int)
+        i_coords = np.floor(grid_coords).astype(np.int32)
         
         # Get fractional offsets within cells
         dx = grid_coords - i_coords
@@ -149,7 +149,7 @@ def _cic_worker(args):
     density_grid = np.zeros((ngrid, ngrid, ngrid), dtype=np.float32)
     
     # Get integer grid coordinates (lower-left corner of cell)
-    i_coords = np.floor(grid_coords).astype(int)
+    i_coords = np.floor(grid_coords).astype(np.int32)
     
     # Get fractional offsets within cells
     dx = grid_coords - i_coords
@@ -224,7 +224,7 @@ def _ngp_worker(args):
     density_grid = np.zeros((ngrid, ngrid, ngrid), dtype=np.float32)
     
     # Round to nearest grid point
-    i_coords = np.round(grid_coords).astype(int)
+    i_coords = np.round(grid_coords).astype(np.int32)
     
     # Apply periodic boundary conditions
     i_coords = i_coords % ngrid
@@ -294,9 +294,9 @@ def _cic_assign_slab_worker(grid: np.ndarray, x: np.ndarray, y: np.ndarray,
         return
     
     # Integer grid coordinates (floor for CIC)
-    ix = np.floor(x).astype(int)
-    iy = np.floor(y).astype(int)
-    iz = np.floor(z).astype(int)
+    ix = np.floor(x).astype(np.int32)
+    iy = np.floor(y).astype(np.int32)
+    iz = np.floor(z).astype(np.int32)
     
     # Fractional offsets
     dx = x - ix
@@ -358,9 +358,9 @@ def _ngp_assign_slab_worker(grid: np.ndarray, x: np.ndarray, y: np.ndarray,
         return
     
     # Round to nearest grid point
-    ix = np.round(x).astype(int) % ngrid_x
-    iy = np.round(y).astype(int)
-    iz = np.round(z).astype(int) % ngrid_z
+    ix = np.round(x).astype(np.int32) % ngrid_x
+    iy = np.round(y).astype(np.int32)
+    iz = np.round(z).astype(np.int32) % ngrid_z
     
     # Check bounds for y (slab dimension)
     valid_mask = (iy >= 0) & (iy < slab_height)
@@ -633,7 +633,7 @@ class ParticleGridder:
         density_grid = np.zeros((self.ngrid, self.ngrid, self.ngrid), dtype=np.float32)
         
         # Get integer grid coordinates (lower-left corner of cell)
-        i_coords = np.floor(grid_coords).astype(int)
+        i_coords = np.floor(grid_coords).astype(np.int32)
         
         # Get fractional offsets within cells
         dx = grid_coords - i_coords
@@ -736,7 +736,7 @@ class ParticleGridder:
         # Floor to correct grid cell for cell-centered grid points
         # For cell-centered grids: grid_point i is at (i+0.5)*dx  
         # Particle at position x belongs to cell floor(x/dx)
-        i_coords = np.floor(grid_coords).astype(int)
+        i_coords = np.floor(grid_coords).astype(np.int32)
         
         # Apply periodic boundary conditions
         i_coords = i_coords % self.ngrid
@@ -823,7 +823,7 @@ class ParticleGridder:
                               device_grid: np.ndarray, y_offset: int, y_size: int) -> None:
         """CIC assignment for a single device domain."""
         # Get integer grid coordinates
-        i_coords = np.floor(grid_coords).astype(int)
+        i_coords = np.floor(grid_coords).astype(np.int32)
         dx = grid_coords - i_coords
         
         # CIC weights (trilinear interpolation)
@@ -852,7 +852,7 @@ class ParticleGridder:
                               device_grid: np.ndarray, y_offset: int, y_size: int) -> None:
         """NGP assignment for a single device domain."""
         # Round to nearest grid point
-        i_coords = np.round(grid_coords).astype(int)
+        i_coords = np.round(grid_coords).astype(np.int32)
         
         # Apply periodic boundary conditions for X and Z
         i_coords[:, 0] = i_coords[:, 0] % self.ngrid
@@ -1079,9 +1079,9 @@ class ParticleGridder:
         # Floor to correct grid cell for cell-centered grid points
         # For cell-centered grids: grid_point i is at (i+0.5)*dx
         # Particle at position x belongs to cell floor(x/dx)
-        ix = np.floor(x).astype(int) % ngrid_x
-        iy = np.floor(y).astype(int)
-        iz = np.floor(z).astype(int) % ngrid_z
+        ix = np.floor(x).astype(np.int32) % ngrid_x
+        iy = np.floor(y).astype(np.int32)
+        iz = np.floor(z).astype(np.int32) % ngrid_z
         
         # Check bounds for y (slab dimension)
         valid_mask = (iy >= 0) & (iy < slab_height)
