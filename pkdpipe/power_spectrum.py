@@ -231,16 +231,33 @@ class PowerSpectrumCalculator:
         n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
         distributed_mode = n_processes > 1
         
-        if distributed_mode:
-            # Create gridder for distributed mode
+        # Create appropriate gridder based on assignment method
+        if assignment == 'ngp':
+            from .ngp_gridder import NGPGridder
+            
+            # Validate constraints for NGPGridder
+            if distributed_mode:
+                if self.ngrid % n_processes != 0:
+                    raise ValueError(
+                        f"For NGP assignment, number of tasks ({n_processes}) must divide "
+                        f"evenly into ngrid ({self.ngrid}). Got remainder {self.ngrid % n_processes}"
+                    )
+            
+            # NGPGridder handles its own MPI initialization
+            gridder = NGPGridder(self.ngrid, self.box_size)
+            if process_id == 0:
+                print(f"Using NGPGridder for NGP assignment (simplified implementation)")
+        else:
+            # Use original ParticleGridder for CIC and other methods
             from .particle_gridder import ParticleGridder
             gridder = ParticleGridder(self.ngrid, self.box_size, assignment)
+            if process_id == 0:
+                print(f"Using ParticleGridder for {assignment.upper()} assignment")
+        
+        if distributed_mode:
             return self._calculate_distributed(
                 particles, gridder, subtract_shot_noise, assignment, save_density_grid)
         else:
-            # Create gridder for single device mode
-            from .particle_gridder import ParticleGridder
-            gridder = ParticleGridder(self.ngrid, self.box_size, assignment)
             return self._calculate_single_device(particles, gridder, subtract_shot_noise, assignment, save_density_grid)
     
     def _validate_particles(self, particles: Dict[str, np.ndarray]) -> None:
@@ -263,7 +280,7 @@ class PowerSpectrumCalculator:
     
 
     def _calculate_distributed(self, particles: Dict[str, np.ndarray], 
-                             gridder: ParticleGridder, subtract_shot_noise: bool,
+                             gridder, subtract_shot_noise: bool,
                              assignment: str, save_density_grid: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
         """
         Calculate power spectrum in distributed multi-process mode with spatial decomposition.
@@ -290,6 +307,86 @@ class PowerSpectrumCalculator:
         comm = _MPI_COMM
         if debug_mode:
             print(f"DEBUG: Process {process_id} initialized MPI communicator", flush=True)
+        
+        # NGP-specific simplified path
+        if assignment == 'ngp':
+            # NGPGridder handles its own MPI and slab decomposition
+            # No particle redistribution needed - each process gets all particles and filters to z-slabs
+            if process_id == 0:
+                print(f"Using simplified NGP path with NGPGridder")
+            
+            # Calculate global particle count
+            local_particle_count = len(particles['x'])
+            self._global_total_particles = comm.allreduce(local_particle_count, op=MPI.SUM)
+            print(f"Process {process_id}: Global particle count (NGP): {self._global_total_particles}, local: {local_particle_count}", flush=True)
+            
+            # Convert to physical coordinates if needed
+            positions = np.column_stack([particles['x'], particles['y'], particles['z']])
+            masses = particles.get('mass', None)
+            
+            # Use NGPGridder to create local density grid
+            local_grid = gridder.grid_particles(positions, masses)
+            print(f"Process {process_id}: NGP gridding complete, local_grid shape: {local_grid.shape}", flush=True)
+            
+            # Validate particle conservation
+            gridder.validate_particle_conservation(self._global_total_particles)
+            
+            # Combine local grids into full density grid using NGPGridder's MPI reduction
+            full_grid = gridder.reduce_grid(local_grid)
+            print(f"Process {process_id}: MPI grid reduction complete, full_grid shape: {full_grid.shape}", flush=True)
+            
+            # Save density grid if requested (use z-slab format to match expected output)
+            if save_density_grid:
+                # For NGP, we need to convert from z-slab to y-slab format for compatibility with save function
+                # Extract this process's y-slab from the full grid for saving
+                slab_height = self.ngrid // n_processes
+                y_start = process_id * slab_height
+                y_end = (process_id + 1) * slab_height if process_id != n_processes - 1 else self.ngrid
+                owned_slab = full_grid[:, y_start:y_end, :]  # Shape: (ngrid, slab_height, ngrid)
+                self._save_density_grid_distributed(owned_slab, process_id, n_processes)
+            
+            # Calculate mean density and density contrast
+            local_mass = np.sum(full_grid) / n_processes  # Each process has the full grid, so divide by n_processes
+            total_mass = comm.allreduce(local_mass, op=MPI.SUM)
+            mean_density = total_mass / self.ngrid**3
+            
+            print(f"Process {process_id}: NGP mean density: {mean_density:.6e}", flush=True)
+            
+            if mean_density <= 0:
+                raise ValueError(f"Process {process_id}: NGP mean density is zero or negative ({mean_density:.6e})")
+            
+            # Calculate density contrast for the full grid
+            delta_grid = (full_grid - mean_density) / mean_density
+            
+            # Store diagnostics (use full grid since all processes have it)
+            self._store_density_diagnostics(full_grid, delta_grid, len(particles['x']))
+            
+            # Proceed with standard FFT and power spectrum calculation
+            # Use JAX distributed FFT on delta_grid
+            print(f"Process {process_id}: Starting NGP FFT with delta_grid shape {delta_grid.shape}", flush=True)
+            delta_k = fft(delta_grid, direction='r2c')
+            print(f"Process {process_id}: NGP FFT complete, delta_k shape {delta_k.shape}", flush=True)
+            
+            # Calculate power spectrum
+            power_3d = np.abs(delta_k)**2 * (self.volume / self.ngrid**6)
+            
+            # Create k-grid for this process's k-space slab
+            # For NGP with full grid input, the FFT output follows standard distributed k-space decomposition
+            # Calculate equivalent y-slab bounds for k-grid creation
+            physical_y_start = y_start * self.box_size / self.ngrid
+            physical_y_end = y_end * self.box_size / self.ngrid
+            k_grid_slab = create_slab_k_grid(self.ngrid, self.box_size, physical_y_start, physical_y_end)
+            
+            # Apply window correction
+            power_3d_corrected, k_grid_corrected = self._apply_window_correction(power_3d, k_grid_slab, assignment)
+            
+            # Bin and reduce power spectrum across processes
+            k_binned, power_binned, n_modes = bin_power_spectrum_distributed(
+                k_grid_corrected, power_3d_corrected, self.k_bins
+            )
+            
+            return self._finalize_power_spectrum(k_binned, power_binned, n_modes,
+                                               subtract_shot_noise, self._global_total_particles)
         
         # Step 1: Redistribute particles based on spatial decomposition using MPI4py
         spatial_particles, y_start, y_end, y_start_ghost, y_end_ghost = redistribute_particles_mpi_simple(
@@ -462,7 +559,7 @@ class PowerSpectrumCalculator:
                                            subtract_shot_noise, self._global_total_particles)
     
     def _calculate_single_device(self, particles: Dict[str, np.ndarray],
-                               gridder: ParticleGridder, subtract_shot_noise: bool,
+                               gridder, subtract_shot_noise: bool,
                                assignment: str, save_density_grid: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
         """Calculate power spectrum on single GPU/CPU."""
         # Time the particle gridding step specifically
@@ -485,8 +582,21 @@ class PowerSpectrumCalculator:
         
         gridding_start = time.time()
         
-        # Single device gridding (may use multiprocessing)
-        density_grid = gridder.particles_to_grid(particles, 1)
+        # Handle different gridder types
+        if assignment == 'ngp':
+            # NGPGridder has different interface - no n_devices parameter
+            positions = np.column_stack([particles['x'], particles['y'], particles['z']])
+            masses = particles.get('mass', None)
+            
+            # For single-device NGP, we still use the distributed approach but with 1 process
+            local_grid = gridder.grid_particles(positions, masses)
+            density_grid = gridder.reduce_grid(local_grid)  # This will just return local_grid for single process
+            
+            # Validate particle conservation
+            gridder.validate_particle_conservation(len(particles['x']))
+        else:
+            # Original ParticleGridder interface
+            density_grid = gridder.particles_to_grid(particles, 1)
         
         gridding_end = time.time()
         gridding_time = gridding_end - gridding_start
