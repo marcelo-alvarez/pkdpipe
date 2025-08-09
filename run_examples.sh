@@ -34,10 +34,10 @@ cd "$SCRIPT_DIR"
 # Function to generate metadata log filename
 generate_log_filename() {
     local timestamp=$(date +"%Y%m%d_%H%M%S")
-    local git_hash=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    local git_hash=$(git rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
     
-    # Check for uncommitted changes
-    if git status --porcelain 2>/dev/null | grep -q .; then
+    # Check for uncommitted changes to tracked files only (same as Python script)
+    if ! git diff-index --quiet HEAD 2>/dev/null; then
         git_hash="${git_hash}-dirty"
     fi
     
