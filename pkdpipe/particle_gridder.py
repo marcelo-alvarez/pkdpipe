@@ -254,17 +254,17 @@ def _cic_slab_worker(args):
     if len(particle_chunk['x']) == 0:
         return slab_grid
     
-    # Convert particle positions to grid coordinates
+    # Convert particle positions to grid coordinates with direct integer conversion
     grid_spacing = box_size / ngrid
-    x_grid = np.asarray(particle_chunk['x']) / grid_spacing
-    y_grid = np.asarray(particle_chunk['y']) / grid_spacing
-    z_grid = np.asarray(particle_chunk['z']) / grid_spacing
+    x_positions = np.asarray(particle_chunk['x'])
+    y_positions = np.asarray(particle_chunk['y'])
+    z_positions = np.asarray(particle_chunk['z'])
     masses = np.asarray(particle_chunk['mass'])
     
-    # Apply periodic boundary conditions
-    x_grid = np.mod(x_grid, ngrid)
-    y_grid = np.mod(y_grid, ngrid)
-    z_grid = np.mod(z_grid, ngrid)
+    # Apply direct integer conversion to eliminate coordinate fraud
+    x_grid = np.floor(x_positions / grid_spacing).astype(np.int32) % ngrid
+    y_grid = np.floor(y_positions / grid_spacing).astype(np.int32) % ngrid
+    z_grid = np.floor(z_positions / grid_spacing).astype(np.int32) % ngrid
     
     # Filter particles that fall within this slab (including ghosts)
     in_slab = (y_grid >= y_min) & (y_grid < y_max)
@@ -941,15 +941,10 @@ class ParticleGridder:
             y_chunk = particles['y'][chunk_start:chunk_end] 
             z_chunk = particles['z'][chunk_start:chunk_end]
             
-            # Convert to grid coordinates on-the-fly (no intermediate arrays)
-            x_grid_chunk = x_chunk / self.grid_spacing
-            y_grid_chunk = y_chunk / self.grid_spacing
-            z_grid_chunk = z_chunk / self.grid_spacing
-            
-            # Apply periodic boundary conditions
-            np.mod(x_grid_chunk, ngrid, out=x_grid_chunk)
-            np.mod(y_grid_chunk, ngrid, out=y_grid_chunk)
-            np.mod(z_grid_chunk, ngrid, out=z_grid_chunk)
+            # Convert to grid coordinates with direct integer conversion (eliminate coordinate fraud)
+            x_grid_chunk = np.floor(x_chunk / self.grid_spacing).astype(np.int32) % ngrid
+            y_grid_chunk = np.floor(y_chunk / self.grid_spacing).astype(np.int32) % ngrid
+            z_grid_chunk = np.floor(z_chunk / self.grid_spacing).astype(np.int32) % ngrid
             
             # Filter particles in this slab
             in_slab = (y_grid_chunk >= y_min) & (y_grid_chunk < y_max)
@@ -1230,17 +1225,17 @@ def _cic_slab_shared_worker(particle_chunk, ngrid, box_size, y_min, y_max, assig
         if len(particle_chunk['x']) == 0:
             return
         
-        # Convert particle positions to grid coordinates
+        # Convert particle positions to grid coordinates with direct integer conversion
         grid_spacing = box_size / ngrid
-        x_grid = np.asarray(particle_chunk['x']) / grid_spacing
-        y_grid = np.asarray(particle_chunk['y']) / grid_spacing
-        z_grid = np.asarray(particle_chunk['z']) / grid_spacing
+        x_positions = np.asarray(particle_chunk['x'])
+        y_positions = np.asarray(particle_chunk['y'])
+        z_positions = np.asarray(particle_chunk['z'])
         masses = np.asarray(particle_chunk['mass'])
         
-        # Apply periodic boundary conditions
-        x_grid = np.mod(x_grid, ngrid)
-        y_grid = np.mod(y_grid, ngrid)
-        z_grid = np.mod(z_grid, ngrid)
+        # Apply direct integer conversion to eliminate coordinate fraud
+        x_grid = np.floor(x_positions / grid_spacing).astype(np.int32) % ngrid
+        y_grid = np.floor(y_positions / grid_spacing).astype(np.int32) % ngrid
+        z_grid = np.floor(z_positions / grid_spacing).astype(np.int32) % ngrid
         
         # Filter particles that fall within this slab (including ghosts)
         in_slab = (y_grid >= y_min) & (y_grid < y_max)
@@ -1304,16 +1299,13 @@ def _cic_slab_shared_worker_optimized(particle_shm_names, n_particles, start_idx
             # Create unit mass array (no mass field needed for gridding)
             mass_chunk = np.ones(len(x_chunk), dtype=np.float32)
             
-            # Convert particle positions to grid coordinates
+            # Convert particle positions to grid coordinates with direct integer conversion
             grid_spacing = box_size / ngrid
-            x_grid = x_chunk / grid_spacing
-            y_grid = y_chunk / grid_spacing  
-            z_grid = z_chunk / grid_spacing
             
-            # Apply periodic boundary conditions
-            x_grid = np.mod(x_grid, ngrid)
-            y_grid = np.mod(y_grid, ngrid)
-            z_grid = np.mod(z_grid, ngrid)
+            # Apply direct integer conversion to eliminate coordinate fraud
+            x_grid = np.floor(x_chunk / grid_spacing).astype(np.int32) % ngrid
+            y_grid = np.floor(y_chunk / grid_spacing).astype(np.int32) % ngrid
+            z_grid = np.floor(z_chunk / grid_spacing).astype(np.int32) % ngrid
             
             # Filter particles that fall within this slab
             in_slab = (y_grid >= y_min) & (y_grid < y_max)

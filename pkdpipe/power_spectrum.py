@@ -196,7 +196,8 @@ class PowerSpectrumCalculator:
     
     def calculate_power_spectrum(self, particles,
                                subtract_shot_noise: bool = False,
-                               assignment: str = 'cic') -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
+                               assignment: str = 'cic',
+                               save_density_grid: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
         """
         Calculate power spectrum from particle distribution.
         
@@ -206,6 +207,7 @@ class PowerSpectrumCalculator:
             particles: Particle dictionary ('x', 'y', 'z', 'mass') 
             subtract_shot_noise: Whether to subtract shot noise
             assignment: Mass assignment scheme ('cic' or 'ngp')
+            save_density_grid: Save the density grid to a binary file for debugging
             
         Returns:
             Tuple of (k_bins, power_spectrum, n_modes_per_bin, grid_stats)
@@ -234,12 +236,12 @@ class PowerSpectrumCalculator:
             from .particle_gridder import ParticleGridder
             gridder = ParticleGridder(self.ngrid, self.box_size, assignment)
             return self._calculate_distributed(
-                particles, gridder, subtract_shot_noise, assignment)
+                particles, gridder, subtract_shot_noise, assignment, save_density_grid)
         else:
             # Create gridder for single device mode
             from .particle_gridder import ParticleGridder
             gridder = ParticleGridder(self.ngrid, self.box_size, assignment)
-            return self._calculate_single_device(particles, gridder, subtract_shot_noise, assignment)
+            return self._calculate_single_device(particles, gridder, subtract_shot_noise, assignment, save_density_grid)
     
     def _validate_particles(self, particles: Dict[str, np.ndarray]) -> None:
         """Validate particle input data."""
@@ -262,7 +264,7 @@ class PowerSpectrumCalculator:
 
     def _calculate_distributed(self, particles: Dict[str, np.ndarray], 
                              gridder: ParticleGridder, subtract_shot_noise: bool,
-                             assignment: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
+                             assignment: str, save_density_grid: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
         """
         Calculate power spectrum in distributed multi-process mode with spatial decomposition.
         
@@ -364,6 +366,9 @@ class PowerSpectrumCalculator:
         
         owned_slab = full_slab[:, ghost_start:ghost_end, :]  # Shape: (ngrid, slab_height, ngrid)
         
+        # Save density grid if requested
+        if save_density_grid:
+            self._save_density_grid_distributed(owned_slab, process_id, n_processes)
         
         # Step 3: Calculate mean density and density contrast  
         local_mass = np.sum(owned_slab)
@@ -458,7 +463,7 @@ class PowerSpectrumCalculator:
     
     def _calculate_single_device(self, particles: Dict[str, np.ndarray],
                                gridder: ParticleGridder, subtract_shot_noise: bool,
-                               assignment: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
+                               assignment: str, save_density_grid: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
         """Calculate power spectrum on single GPU/CPU."""
         # Time the particle gridding step specifically
         import time
@@ -512,6 +517,10 @@ class PowerSpectrumCalculator:
         
         # Store diagnostics before delta conversion (save original density)
         original_density = density_grid.copy()
+        
+        # Save density grid if requested
+        if save_density_grid:
+            self._save_density_grid_single_device(density_grid)
         
         # MEMORY OPTIMIZATION: In-place delta calculation (no separate delta_grid)
         density_grid /= mean_density
@@ -1082,6 +1091,107 @@ class PowerSpectrumCalculator:
         }
         
         return k_binned, power_binned, n_modes, grid_stats
+
+    def _save_density_grid_distributed(self, owned_slab: np.ndarray, process_id: int, n_processes: int):
+        """Save the density grid from all processes to a single binary file."""
+        if _MPI_AVAILABLE:
+            comm = _MPI_COMM
+            
+            # Generate unique filename with metadata
+            import subprocess
+            import datetime
+            
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            try:
+                git_hash = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'],
+                                                 stderr=subprocess.DEVNULL).decode().strip()
+                # Check for uncommitted changes
+                status = subprocess.check_output(['git', 'status', '--porcelain'],
+                                               stderr=subprocess.DEVNULL).decode().strip()
+                if status:
+                    git_hash += "-dirty"
+            except:
+                git_hash = "unknown"
+            
+            filename = f"density_grid_ngrid{self.ngrid}_ntasks{n_processes}_{git_hash}_{timestamp}.bin"
+            
+            if process_id == 0:
+                print(f"Saving density grid to: {filename}")
+            
+            # Gather all slabs to process 0
+            # Each process sends its owned_slab shape and data
+            slab_shape = owned_slab.shape
+            slab_sizes = comm.gather(slab_shape, root=0)
+            
+            if process_id == 0:
+                # Process 0: collect all slabs and write to file
+                full_grid = np.zeros((self.ngrid, self.ngrid, self.ngrid), dtype=np.float32)
+                
+                # Insert process 0's data
+                y_start = 0
+                y_end = slab_shape[1]
+                full_grid[:, y_start:y_end, :] = owned_slab.astype(np.float32)
+                
+                # Collect data from other processes
+                y_offset = y_end
+                for rank in range(1, n_processes):
+                    remote_slab = comm.recv(source=rank, tag=rank)
+                    remote_height = slab_sizes[rank][1]
+                    full_grid[:, y_offset:y_offset+remote_height, :] = remote_slab.astype(np.float32)
+                    y_offset += remote_height
+                
+                # Calculate and report global statistics
+                grid_mean = np.mean(full_grid)
+                grid_var = np.var(full_grid)
+                grid_sum = np.sum(full_grid)
+                print(f"Global density grid statistics:")
+                print(f"  Mean: {grid_mean:.6e}")
+                print(f"  Variance: {grid_var:.6e}")
+                print(f"  Sum: {grid_sum:.6e} (total particles in grid)")
+                print(f"  Shape: {full_grid.shape}")
+                
+                # Save to binary file
+                full_grid.tofile(filename)
+                print(f"✅ Density grid saved to {filename}")
+                
+            else:
+                # Other processes: send their data to process 0
+                comm.send(owned_slab, dest=0, tag=process_id)
+
+    def _save_density_grid_single_device(self, density_grid: np.ndarray):
+        """Save the full density grid from single device mode to a binary file."""
+        import subprocess
+        import datetime
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        try:
+            git_hash = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'],
+                                             stderr=subprocess.DEVNULL).decode().strip()
+            # Check for uncommitted changes
+            status = subprocess.check_output(['git', 'status', '--porcelain'],
+                                           stderr=subprocess.DEVNULL).decode().strip()
+            if status:
+                git_hash += "-dirty"
+        except:
+            git_hash = "unknown"
+        
+        filename = f"density_grid_ngrid{self.ngrid}_ntasks1_{git_hash}_{timestamp}.bin"
+        
+        print(f"Saving density grid to: {filename}")
+        
+        # Calculate and report global statistics
+        grid_mean = np.mean(density_grid)
+        grid_var = np.var(density_grid)
+        grid_sum = np.sum(density_grid)
+        print(f"Global density grid statistics:")
+        print(f"  Mean: {grid_mean:.6e}")
+        print(f"  Variance: {grid_var:.6e}")
+        print(f"  Sum: {grid_sum:.6e} (total particles in grid)")
+        print(f"  Shape: {density_grid.shape}")
+        
+        # Save to binary file
+        density_grid.astype(np.float32).tofile(filename)
+        print(f"✅ Density grid saved to {filename}")
     
     def get_density_diagnostics(self) -> Dict[str, float]:
             """

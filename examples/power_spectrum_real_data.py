@@ -17,6 +17,8 @@ import sys
 import os
 import numpy as np
 from pathlib import Path
+import subprocess
+from datetime import datetime
 
 # Configure NumPy threading FIRST to use all CPU cores for gridding operations
 # This is critical for scaling particle gridding across all 32 cores per GPU
@@ -40,6 +42,52 @@ JAX_AVAILABLE = True  # Assume JAX is available - will be verified when needed
 
 from pkdpipe.data import Data
 from pkdpipe.power_spectrum import PowerSpectrumCalculator
+
+
+def get_git_metadata():
+    """Get current git commit hash and check for uncommitted changes."""
+    try:
+        # Get current commit hash
+        commit_hash = subprocess.check_output(['git', 'rev-parse', 'HEAD'], 
+                                             stderr=subprocess.DEVNULL).decode().strip()[:8]
+        
+        # Check for uncommitted changes
+        status = subprocess.check_output(['git', 'status', '--porcelain'],
+                                       stderr=subprocess.DEVNULL).decode().strip()
+        if status:
+            commit_hash += "-dirty"
+            
+        return commit_hash
+    except:
+        return "unknown"
+
+
+def generate_metadata_filename(base_name, ngrid, assignment, ntasks=None, variant=None):
+    """Generate a unique filename with metadata."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    git_hash = get_git_metadata()
+    
+    # Get MPI info if available
+    try:
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+        if comm.rank == 0 and ntasks is None:
+            ntasks = comm.size
+    except:
+        pass
+    
+    # Build filename components
+    parts = [base_name]
+    parts.append(f"ngrid{ngrid}")
+    parts.append(assignment)
+    if ntasks:
+        parts.append(f"ntasks{ntasks}")
+    if variant:
+        parts.append(variant.replace("-", "_"))
+    parts.append(git_hash)
+    parts.append(timestamp)
+    
+    return "_".join(parts)
 
 
 def find_simulation_data(campaign_dir, variant_name):
@@ -231,7 +279,7 @@ def generate_synthetic_particle_data(process_id=0):
     return result, box_size, sim_params
 
 
-def calculate_power_spectrum(particles_or_data, box_size, ngrid=256, assignment='cic', n_devices=1):
+def calculate_power_spectrum(particles_or_data, box_size, ngrid=256, assignment='cic', n_devices=1, save_density_grid=False):
     """Calculate the power spectrum of the particle distribution."""
     
     print(f"\n" + "="*60)
@@ -405,7 +453,7 @@ def calculate_power_spectrum(particles_or_data, box_size, ngrid=256, assignment=
     import time
     gridding_start = time.time()
     
-    k_bins, power_spectrum, n_modes, grid_stats = calc.calculate_power_spectrum(data_input, assignment=assignment)
+    k_bins, power_spectrum, n_modes, grid_stats = calc.calculate_power_spectrum(data_input, assignment=assignment, save_density_grid=save_density_grid)
     
     # MPI barrier after gridding to get accurate timing
     try:
@@ -486,9 +534,17 @@ def analyze_results(k_bins, power_spectrum, n_modes, density_stats, box_size, n_
     print(f"  Power spectrum range: {power_spectrum.min():.2e} to {power_spectrum.max():.2e} (Mpc/h)³")
     print(f"  Total modes measured: {n_modes.sum():,}")
     
-    # Save power spectrum to file
-    output_file = f"power_spectrum_ngrid{ngrid}_{assignment}.txt"
-    print(f"\nSaving power spectrum to: {output_file}")
+    # Save power spectrum to file with metadata
+    # Get variant name from args if available
+    import sys
+    variant = None
+    for i, arg in enumerate(sys.argv):
+        if arg == '--variant' and i + 1 < len(sys.argv):
+            variant = sys.argv[i + 1]
+            break
+    
+    output_file = generate_metadata_filename("power_spectrum", ngrid, assignment, variant=variant) + ".txt"
+    print(f"Saving power spectrum to: {output_file}")
     
     # Create header with metadata
     header = f"""# Power Spectrum Analysis Results
@@ -540,6 +596,8 @@ def main():
                        help="Number of GPU devices to use (auto-detects from SLURM if not specified)")
     parser.add_argument("--debug-synthetic", action="store_true",
                        help="Use synthetic random particle data instead of reading from disk (for fast memory debugging)")
+    parser.add_argument("--save-density-grid", action="store_true",
+                       help="Save the full density grid to a binary file for comparison")
     
     args = parser.parse_args()
     
@@ -613,7 +671,7 @@ def main():
         
         print(f"Process {process_id}: Entering calculate_power_spectrum...")
         k_bins, power_spectrum, n_modes, density_stats = calculate_power_spectrum(
-            particles_or_data, box_size, args.ngrid, args.assignment, args.n_devices
+            particles_or_data, box_size, args.ngrid, args.assignment, args.n_devices, args.save_density_grid
         )
         print(f"Process {process_id}: Returned from calculate_power_spectrum...")
         
