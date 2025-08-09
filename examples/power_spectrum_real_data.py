@@ -69,14 +69,14 @@ def generate_metadata_filename(base_name, ngrid, assignment, ntasks=None, varian
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     git_hash = get_git_metadata()
     
-    # Get MPI info if available
-    try:
-        from mpi4py import MPI
-        comm = MPI.COMM_WORLD
-        if comm.rank == 0 and ntasks is None:
+    # If ntasks not provided, try to get it from MPI
+    if ntasks is None:
+        try:
+            from mpi4py import MPI
+            comm = MPI.COMM_WORLD
             ntasks = comm.size
-    except:
-        pass
+        except:
+            pass
     
     # Build filename components
     parts = [base_name]
@@ -545,7 +545,16 @@ def analyze_results(k_bins, power_spectrum, n_modes, density_stats, box_size, n_
             variant = sys.argv[i + 1]
             break
     
-    output_file = generate_metadata_filename("power_spectrum", ngrid, assignment, variant=variant) + ".txt"
+    # Get number of MPI tasks for filename
+    ntasks = None
+    try:
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+        ntasks = comm.size
+    except:
+        pass
+    
+    output_file = generate_metadata_filename("power_spectrum", ngrid, assignment, ntasks=ntasks, variant=variant) + ".txt"
     print(f"Saving power spectrum to: {output_file}")
     
     # Create header with metadata
@@ -677,9 +686,16 @@ def main():
         )
         print(f"Process {process_id}: Returned from calculate_power_spectrum...")
         
-        # Analyze results
-        analyze_results(k_bins, power_spectrum, n_modes, density_stats, 
-                       box_size, n_particles, args.ngrid, args.assignment)
+        # Analyze results - only rank 0 saves the file to avoid duplicates
+        if process_id == 0:
+            analyze_results(k_bins, power_spectrum, n_modes, density_stats, 
+                           box_size, n_particles, args.ngrid, args.assignment)
+        else:
+            # Other ranks just print summary without saving
+            print(f"\nProcess {process_id}: Power spectrum calculation completed")
+            print(f"  k-bins: {len(k_bins)}")
+            print(f"  Power spectrum range: {power_spectrum.min():.2e} to {power_spectrum.max():.2e}")
+            print(f"  Total modes: {n_modes.sum():,}")
         
         print(f"\n" + "="*60)
         print("✅ POWER SPECTRUM ANALYSIS COMPLETED SUCCESSFULLY!")
