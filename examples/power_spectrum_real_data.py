@@ -45,16 +45,18 @@ from pkdpipe.power_spectrum import PowerSpectrumCalculator
 
 
 def get_git_metadata():
-    """Get current git commit hash and check for uncommitted changes."""
+    """Get current git commit hash and check for uncommitted changes to tracked files."""
     try:
         # Get current commit hash
         commit_hash = subprocess.check_output(['git', 'rev-parse', 'HEAD'], 
                                              stderr=subprocess.DEVNULL).decode().strip()[:8]
         
-        # Check for uncommitted changes
-        status = subprocess.check_output(['git', 'status', '--porcelain'],
-                                       stderr=subprocess.DEVNULL).decode().strip()
-        if status:
+        # Check for uncommitted changes to tracked files only (not untracked files)
+        # Using git diff-index to check if tracked files have changes
+        diff_status = subprocess.run(['git', 'diff-index', '--quiet', 'HEAD'],
+                                    stderr=subprocess.DEVNULL, capture_output=False)
+        if diff_status.returncode != 0:
+            # There are uncommitted changes to tracked files
             commit_hash += "-dirty"
             
         return commit_hash
