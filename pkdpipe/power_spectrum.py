@@ -832,11 +832,11 @@ class PowerSpectrumCalculator:
                         local_grid = gridder.grid_particles(positions, masses)
                         chunk_density = gridder.reduce_grid(local_grid)
                     else:
-                # CIC assignment no longer supported
-                raise ValueError(
-                    f"Assignment method '{assignment}' is not supported. "
-                    f"This simplified implementation only supports 'ngp'."
-                )
+                        # CIC assignment no longer supported
+                        raise ValueError(
+                            f"Assignment method '{assignment}' is not supported. "
+                            f"This simplified implementation only supports 'ngp'."
+                        )
                         
                     density_grid += chunk_density
                 except Exception as e:
@@ -1191,7 +1191,7 @@ class PowerSpectrumCalculator:
         
         return power_3d_corrected, k_grid
     
-def _ngp_window_function(self, k_grid: np.ndarray) -> np.ndarray:
+    def _ngp_window_function(self, k_grid: np.ndarray) -> np.ndarray:
         """
         Calculate the Nearest Grid Point window function correction.
         
