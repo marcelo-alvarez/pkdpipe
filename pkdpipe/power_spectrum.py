@@ -293,7 +293,7 @@ class PowerSpectrumCalculator:
         
         # Step 1: Redistribute particles based on spatial decomposition using MPI4py
         spatial_particles, y_start, y_end, y_start_ghost, y_end_ghost = redistribute_particles_mpi_simple(
-            particles, self.ngrid, self.box_size, comm
+            particles, self.ngrid, self.box_size, comm, assignment
         )
         
         # Debug: Check domain decomposition (all in grid coordinates now)
@@ -323,18 +323,18 @@ class PowerSpectrumCalculator:
         print(f"Process {process_id}: Starting grid allocation for slab {self.ngrid}x{ghost_slab_height}x{self.ngrid} (owned: {slab_height} cells)", flush=True)
         
         # Grid particles to slab including ghost zones (all coordinates in grid units)
-        print(f"Process {process_id}: Starting CIC assignment to slab...", flush=True)
+        print(f"Process {process_id}: Starting {assignment.upper()} assignment to slab...", flush=True)
         full_slab = gridder.particles_to_slab(spatial_particles, y_start_ghost, y_end_ghost, self.ngrid)
         
-        print(f"Process {process_id}: CIC assignment complete, full_slab shape: {full_slab.shape}", flush=True)
+        print(f"Process {process_id}: {assignment.upper()} assignment complete, full_slab shape: {full_slab.shape}", flush=True)
         
         # MPI Barrier: Synchronize after gridding operations before memory operations
         try:
             if _MPI_AVAILABLE:
                 comm = _MPI_COMM
-                print(f"Process {process_id}: SYNC POINT 2 - After CIC assignment", flush=True)
+                print(f"Process {process_id}: SYNC POINT 2 - After {assignment.upper()} assignment", flush=True)
                 comm.Barrier()
-                print(f"Process {process_id}: SYNC POINT 2 - All processes completed CIC assignment", flush=True)
+                print(f"Process {process_id}: SYNC POINT 2 - All processes completed {assignment.upper()} assignment", flush=True)
         except ImportError:
             pass
         
@@ -1284,7 +1284,7 @@ def get_spatial_domain_simple(process_id, n_processes, ngrid, assignment_scheme)
         
     return y_start, y_end, y_start_ghost, y_end_ghost
 
-def redistribute_particles_mpi_simple(particles, ngrid, box_size, comm):
+def redistribute_particles_mpi_simple(particles, ngrid, box_size, comm, assignment):
     """
     Redistribute particles using MPI based on a simple Y-slab decomposition.
     
@@ -1354,7 +1354,7 @@ def redistribute_particles_mpi_simple(particles, ngrid, box_size, comm):
     
     # Get domain boundaries for this process
     y_start, y_end, y_start_ghost, y_end_ghost = get_spatial_domain_simple(
-        process_id, n_processes, ngrid, 'cic' # Assuming CIC for now
+        process_id, n_processes, ngrid, assignment
     )
     
     return local_particles, y_start, y_end, y_start_ghost, y_end_ghost
