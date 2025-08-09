@@ -33,15 +33,30 @@ Items in this checklist may only be checked off as complete with PRIOR AND IMMED
 - [✅] **Test MPI functionality**: Multi-process grid reduction
 
 ### Task 1.3: Integration with PowerSpectrumCalculator
-- [ ] **Identify integration points**: Where NGP gridding is called in `power_spectrum.py`
-- [ ] **Add NGPGridder import**: Import new class
-- [ ] **Create selection logic**: Use NGPGridder when `assignment='ngp'`
-- [ ] **Update NGP code path**: Replace old gridding with NGPGridder
-- [ ] **Remove old code paths**: Delete ParticleGridder after validation complete
-- [ ] **Add error handling**: Proper error messages for unsupported cases
-- [ ] **Update logging**: Add NGPGridder-specific log messages
+- [✅] **Identify integration points**: Where NGP gridding is called in `power_spectrum.py`
+- [✅] **Add NGPGridder import**: Import new class
+- [✅] **Create selection logic**: Use NGPGridder when `assignment='ngp'`
+- [✅] **Update NGP code path**: Replace old gridding with NGPGridder
+- [✅] **Remove ParticleGridder entirely**: Delete ParticleGridder from git and disk completely
+- [✅] **Remove CIC code**: Delete all CIC assignment support from power_spectrum.py
+- [✅] **Raise CIC errors**: Add explicit error for `assignment='cic'` with clear message
+- [✅] **Add error handling**: Proper error messages for unsupported cases
+- [✅] **Update logging**: Add NGPGridder-specific log messages
 
-## Phase 2: Validation Against Current Results ⏳ PENDING
+### Task 1.4: Production Integration and Cleanup
+- [ ] **Update default behavior**: NGPGridder becomes primary NGP implementation
+- [ ] **Update documentation**: Reflect new implementation in code comments
+- [ ] **Update example scripts**: Ensure all examples work with new implementation
+- [ ] **Test with all variants**: lcdm-validation, wcdm-validation, phicdm-validation (NGP only)
+- [ ] **Verify SLURM integration**: All `./run_examples.sh` parameters work correctly
+- [ ] **Clean up imports**: Remove unused old gridding imports where applicable
+- [ ] **Update class docstrings**: Document NGPGridder thoroughly
+- [ ] **Add inline comments**: Explain key implementation decisions
+- [ ] **Update CLAUDE.md**: Reflect new NGP implementation status
+- [ ] **Update context.md**: Mark NGP simplification complete
+- [ ] **Clean git status**: Ensure no temporary files left in repository
+
+## Phase 2: Comparison Against Previous NGP Results ⏳ PENDING
 
 ### Task 2.1: Use Existing Baseline Reference Files
 - [✅] **Baseline data available**: Located in `./ngp-complex-validation-data/`
@@ -61,38 +76,14 @@ Items in this checklist may only be checked off as complete with PRIOR AND IMMED
 - [ ] **Verify 4-task vs 8-task consistency**: Results should be identical
 - [ ] **Check numerical precision**: Document any floating-point differences
 
-### Task 2.3: Success Criteria Verification
+### Task 2.3: Success Criteria Comparison
 - [ ] **Exact particle conservation**: 2,744,000,000 particles in all runs
 - [ ] **Density grid sum match**: Within numerical precision of baseline
 - [ ] **Power spectra match**: Within statistical significance thresholds
 - [ ] **4-task/8-task consistency**: New implementation produces identical results
-- [ ] **Performance acceptable**: Runtime within reasonable bounds of current implementation
+- [ ] **Performance acceptable**: Runtime within reasonable bounds of previous implementation
 - [ ] **No crashes or errors**: All test cases complete successfully
 
-## Phase 3: Production Integration ⏳ PENDING
-
-### Task 3.1: Replace Production NGP Code Paths
-- [ ] **Update default behavior**: NGPGridder becomes primary NGP implementation
-- [ ] **Delete old code**: Remove ParticleGridder and old infrastructure from git and disk
-- [ ] **Update documentation**: Reflect new implementation in code comments
-- [ ] **Update example scripts**: Ensure all examples work with new implementation
-- [ ] **Test with all variants**: lcdm-validation, wcdm-validation, phicdm-validation
-- [ ] **Verify SLURM integration**: All `./run_examples.sh` parameters work correctly
-
-### Task 3.2: Code Cleanup and Documentation
-- [ ] **Clean up imports**: Remove unused old gridding imports where applicable
-- [ ] **Update class docstrings**: Document NGPGridder thoroughly
-- [ ] **Add inline comments**: Explain key implementation decisions
-- [ ] **Update CLAUDE.md**: Reflect new NGP implementation status
-- [ ] **Update context.md**: Mark NGP simplification complete
-- [ ] **Create summary**: Document what was accomplished and lessons learned
-
-### Task 3.3: Final Validation
-- [ ] **Full regression test**: Run all existing test commands with new implementation
-- [ ] **Compare to original baseline**: Verify final implementation matches original baseline
-- [ ] **Performance benchmark**: Document any performance changes
-- [ ] **Memory usage check**: Verify memory usage is acceptable
-- [ ] **Clean git status**: Ensure no temporary files left in repository
 
 ## Future Phase: CIC Evaluation (DEFERRED) 🔴 BLOCKED
 
@@ -103,11 +94,11 @@ Items in this checklist may only be checked off as complete with PRIOR AND IMMED
 - [ ] **Decision point**: Proceed with CIC implementation or stay with NGP
 
 ### Task 4.2: CICGridder Implementation (If Needed)
-- [ ] **Design CICGridder**: Clean CIC implementation separate from NGP
+- [ ] **Design CICGridder from scratch**: Clean CIC implementation built fresh, no legacy code
 - [ ] **Implement ghost cell handling**: Explicit, well-documented ghost cell logic for CIC interpolation
 - [ ] **Add CIC-specific tests**: Test suite for CIC functionality
-- [ ] **Integration testing**: CIC and NGP working independently
-- [ ] **Validation against theory**: CIC results match expected theoretical behavior
+- [ ] **Integration testing**: CIC and NGP working independently  
+- [ ] **Comparison against theory**: CIC results match expected theoretical behavior
 
 ## Status Legend
 - 🎯 **READY TO BEGIN**: Prerequisites met, can start immediately
@@ -119,6 +110,6 @@ Items in this checklist may only be checked off as complete with PRIOR AND IMMED
 
 ## Notes
 - **Baseline Status**: NGP working perfectly (commit 97dbfad), exact particle conservation achieved
-- **Current Implementation**: Complex but functional, serves as validation baseline
+- **Current Implementation**: Complex but functional, serves as comparison baseline
 - **Strategy**: Simplify NGP first, evaluate CIC necessity later
 - **Success Criteria**: Identical results to current baseline, simplified maintainable code

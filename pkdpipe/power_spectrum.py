@@ -15,7 +15,7 @@ Example usage:
         ngrid=512, box_size=2000.0, n_devices=4, apply_window_correction=True
     )
     k_bins, power, n_modes = calculator.calculate_power_spectrum(
-        particles, subtract_shot_noise=True, assignment='cic'
+        particles, subtract_shot_noise=True, assignment='ngp'
     )
     
     # Custom k-binning
@@ -99,7 +99,7 @@ def _ensure_jax_initialized():
     return jax, jnp
 
 from .jax_fft import fft
-from .particle_gridder import ParticleGridder
+
 from .multi_gpu_utils import (
     is_distributed_mode, create_local_k_grid, create_full_k_grid, create_slab_k_grid,
     bin_power_spectrum_distributed, bin_power_spectrum_single, default_k_bins
@@ -196,7 +196,7 @@ class PowerSpectrumCalculator:
     
     def calculate_power_spectrum(self, particles,
                                subtract_shot_noise: bool = False,
-                               assignment: str = 'cic',
+                               assignment: str = 'ngp',
                                save_density_grid: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
         """
         Calculate power spectrum from particle distribution.
@@ -206,7 +206,7 @@ class PowerSpectrumCalculator:
         Args:
             particles: Particle dictionary ('x', 'y', 'z', 'mass') 
             subtract_shot_noise: Whether to subtract shot noise
-            assignment: Mass assignment scheme ('cic' or 'ngp')
+            assignment: Mass assignment scheme (only 'ngp' supported)
             save_density_grid: Save the density grid to a binary file for debugging
             
         Returns:
@@ -248,11 +248,12 @@ class PowerSpectrumCalculator:
             if process_id == 0:
                 print(f"Using NGPGridder for NGP assignment (simplified implementation)")
         else:
-            # Use original ParticleGridder for CIC and other methods
-            from .particle_gridder import ParticleGridder
-            gridder = ParticleGridder(self.ngrid, self.box_size, assignment)
-            if process_id == 0:
-                print(f"Using ParticleGridder for {assignment.upper()} assignment")
+            # CIC assignment is no longer supported - simplified implementation only supports NGP
+            raise ValueError(
+                f"Assignment method '{assignment}' is not supported. "
+                f"This simplified implementation only supports 'ngp'. "
+                f"CIC support was removed during NGP simplification."
+            )
         
         if distributed_mode:
             return self._calculate_distributed(
@@ -267,7 +268,7 @@ class PowerSpectrumCalculator:
         
         # Check that all arrays have same length
         n_particles = len(particles['x'])
-        for key in ['y', 'z']:  # REMOVED 'mass' - not required for CIC gridding
+        for key in ['y', 'z']:  # Note: 'mass' not required for NGP gridding
             if key not in particles:
                 raise ValueError(f"Missing required key: {key}")
             if len(particles[key]) != n_particles:
@@ -595,8 +596,11 @@ class PowerSpectrumCalculator:
             # Validate particle conservation
             gridder.validate_particle_conservation(len(particles['x']))
         else:
-            # Original ParticleGridder interface
-            density_grid = gridder.particles_to_grid(particles, 1)
+            # CIC and other assignment methods no longer supported
+            raise ValueError(
+                f"Assignment method '{assignment}' is not supported. "
+                f"This simplified implementation only supports 'ngp'."
+            )
         
         gridding_end = time.time()
         gridding_time = gridding_end - gridding_start
@@ -673,7 +677,7 @@ class PowerSpectrumCalculator:
         Args:
             data_reader: Data object with chunked reading capability
             subtract_shot_noise: Whether to subtract shot noise
-            assignment: Mass assignment scheme ('cic' or 'ngp')
+            assignment: Mass assignment scheme (only 'ngp' supported)
             
         Returns:
             Tuple of (k_bins, power_spectrum, n_modes_per_bin)
@@ -692,7 +696,19 @@ class PowerSpectrumCalculator:
         """Streaming calculation for single process mode."""
         # Initialize density grid
         density_grid = np.zeros((self.ngrid, self.ngrid, self.ngrid), dtype=np.float32)
-        gridder = ParticleGridder(self.ngrid, self.box_size, assignment)
+        
+        # Create appropriate gridder based on assignment method
+        if assignment == 'ngp':
+            from .ngp_gridder import NGPGridder
+            gridder = NGPGridder(self.ngrid, self.box_size)
+            print("Using NGPGridder for streaming NGP assignment")
+        else:
+            # CIC assignment no longer supported in simplified implementation
+            raise ValueError(
+                f"Assignment method '{assignment}' is not supported. "
+                f"This simplified implementation only supports 'ngp'."
+            )
+        
         total_particles = 0
         
         print(f"Processing particles in chunks...")
@@ -705,12 +721,28 @@ class PowerSpectrumCalculator:
             total_particles += n_chunk_particles
             
             # Grid particles from this chunk and accumulate
-            chunk_density = gridder.particles_to_grid(chunk_particles, n_devices=1)
+            if assignment == 'ngp':
+                # NGPGridder interface
+                positions = np.column_stack([chunk_particles['x'], chunk_particles['y'], chunk_particles['z']])
+                masses = chunk_particles.get('mass', None)
+                local_grid = gridder.grid_particles(positions, masses)
+                chunk_density = gridder.reduce_grid(local_grid)  # For single process, just returns local_grid
+            else:
+                # CIC assignment no longer supported
+                raise ValueError(
+                    f"Assignment method '{assignment}' is not supported. "
+                    f"This simplified implementation only supports 'ngp'."
+                )
+                
             density_grid += chunk_density
             
             print(f"  Processed chunk {chunk_count}: {n_chunk_particles:,} particles")
         
         print(f"Total particles processed: {total_particles:,}")
+        
+        # Validate particle conservation for NGP
+        if assignment == 'ngp':
+            gridder.validate_particle_conservation(total_particles)
         
         # Calculate mean density and density contrast
         mean_density = np.float32(density_grid.mean())
@@ -758,7 +790,19 @@ class PowerSpectrumCalculator:
         """
         # Initialize density grid
         density_grid = np.zeros((self.ngrid, self.ngrid, self.ngrid), dtype=np.float32)
-        gridder = ParticleGridder(self.ngrid, self.box_size, assignment)
+        
+        # Create appropriate gridder based on assignment method
+        if assignment == 'ngp':
+            from .ngp_gridder import NGPGridder
+            gridder = NGPGridder(self.ngrid, self.box_size)
+            print("Using NGPGridder for streaming NGP assignment (distributed)")
+        else:
+            # CIC assignment no longer supported in simplified implementation
+            raise ValueError(
+                f"Assignment method '{assignment}' is not supported. "
+                f"This simplified implementation only supports 'ngp'."
+            )
+        
         total_particles = 0
         
         # Get process ID for logging (use SLURM info instead of JAX)
@@ -781,7 +825,19 @@ class PowerSpectrumCalculator:
                 
                 # Grid particles from this chunk and accumulate
                 try:
-                    chunk_density = gridder.particles_to_grid(chunk_particles, n_devices=1)
+                    if assignment == 'ngp':
+                        # NGPGridder interface
+                        positions = np.column_stack([chunk_particles['x'], chunk_particles['y'], chunk_particles['z']])
+                        masses = chunk_particles.get('mass', None)
+                        local_grid = gridder.grid_particles(positions, masses)
+                        chunk_density = gridder.reduce_grid(local_grid)
+                    else:
+                # CIC assignment no longer supported
+                raise ValueError(
+                    f"Assignment method '{assignment}' is not supported. "
+                    f"This simplified implementation only supports 'ngp'."
+                )
+                        
                     density_grid += chunk_density
                 except Exception as e:
                     print(f"  ERROR in particles_to_grid: {e}")
@@ -801,6 +857,18 @@ class PowerSpectrumCalculator:
         
         if process_id == 0:
             print(f"Process {process_id} total particles: {total_particles:,}")
+        
+        # Validate particle conservation for NGP
+        if assignment == 'ngp':
+            # For distributed streaming, we need to calculate global particle count first
+            try:
+                from mpi4py import MPI
+                comm = MPI.COMM_WORLD
+                global_particle_count = comm.allreduce(total_particles, op=MPI.SUM)
+                gridder.validate_particle_conservation(global_particle_count)
+            except ImportError:
+                print("WARNING: MPI not available for NGP particle conservation validation")
+                gridder.validate_particle_conservation(total_particles)
         
         # Handle case where this process gets no particles
         if total_particles == 0:
@@ -847,8 +915,8 @@ class PowerSpectrumCalculator:
                 # where S^2 is the sample variance and σ^2 is the theoretical variance.
                 # Here, S^2 = global_variance, σ^2 = global_mean
                 n_samples = global_count
-                if global_mean > 0:
-                    chi2_statistic = (n_samples - 1) * global_variance / global_mean
+                if global_mean_density > 0:
+                    chi2_statistic = (n_samples - 1) * global_variance / global_mean_density
                     degrees_of_freedom = n_samples - 1
                     
                     # Use scipy.stats for p-value. Import locally.
@@ -863,17 +931,25 @@ class PowerSpectrumCalculator:
                     p_value = np.nan
 
                 # Store global total particles for get_density_diagnostics
-                self._global_total_particles = comm.allreduce(n_particles, op=MPI.SUM)
+                self._global_total_particles = comm.allreduce(total_particles, op=MPI.SUM)
                 
-                if debug_mode:
-                    print(f"DEBUG: Process {comm.Get_rank()}: Global density stats - mean: {global_mean:.6e}, variance: {global_variance:.6e}")
+                # Calculate global delta statistics
+                delta_grid_flat = ((density_grid - global_mean_density) / global_mean_density).flatten()
+                local_delta_sum = np.sum(delta_grid_flat)
+                local_delta_sum_sq = np.sum(delta_grid_flat**2)
+                
+                global_delta_sum = comm.allreduce(local_delta_sum, op=MPI.SUM)
+                global_delta_sum_sq = comm.allreduce(local_delta_sum_sq, op=MPI.SUM)
+                
+                global_delta_mean = global_delta_sum / global_count
+                global_delta_variance = (global_delta_sum_sq / global_count) - global_delta_mean**2
                 
                 self._last_density_stats = {
-                    'mean_density': float(global_mean),
+                    'mean_density': float(global_mean_density),
                     'density_variance': float(global_variance),
                     'delta_mean': float(global_delta_mean),
                     'delta_variance': float(global_delta_variance),
-                    'theoretical_shot_noise_variance': float(self._global_total_particles / (global_mean * self.ngrid**3)) if global_mean > 0 else np.nan,
+                    'theoretical_shot_noise_variance': float(self._global_total_particles / (global_mean_density * self.ngrid**3)) if global_mean_density > 0 else np.nan,
                     'variance_chi2_statistic': float(chi2_statistic),
                     'variance_p_value': float(p_value)
                 }
@@ -881,13 +957,13 @@ class PowerSpectrumCalculator:
             except ImportError:
                 # Fallback to local stats if MPI not available
                 print("WARNING: MPI not available, using local density statistics")
-                mean_density = float(np.mean(density_flat))
+                mean_density = np.float32(density_grid.mean())
                 self._last_density_stats = {
-                    'mean_density': mean_density,
-                    'density_variance': float(np.var(density_flat)),
-                    'delta_mean': float(np.mean(delta_flat)),
-                    'delta_variance': float(np.var(delta_flat)),
-                    'theoretical_shot_noise_variance': float(n_particles / (mean_density * self.ngrid**3)) if mean_density > 0 else np.nan
+                    'mean_density': float(mean_density),
+                    'density_variance': float(np.var(density_grid)),
+                    'delta_mean': 0.0,  # Will be calculated below
+                    'delta_variance': 0.0,  # Will be calculated below
+                    'theoretical_shot_noise_variance': float(total_particles / (mean_density * self.ngrid**3)) if mean_density > 0 else np.nan
                 }
         else:
             # Single process mode: use local mean
@@ -1068,7 +1144,7 @@ class PowerSpectrumCalculator:
         Args:
             power_3d: 3D power spectrum array
             k_grid: 3D k-magnitude grid (must be preserved for distributed mode)
-            assignment: Mass assignment scheme ('cic' or 'ngp')
+            assignment: Mass assignment scheme (only 'ngp' supported)
             
         Returns:
             Tuple of (corrected/uncorrected 3D power spectrum, original k_grid)
@@ -1097,9 +1173,7 @@ class PowerSpectrumCalculator:
             
         # Window correction is enabled - apply correction using provided k_grid
         # IMPORTANT: Use the original k_grid to preserve distributed k-space structure
-        if assignment.lower() == 'cic':
-            window_correction = self._cic_window_function(k_grid)
-        elif assignment.lower() == 'ngp':
+        if assignment.lower() == 'ngp':
             window_correction = self._ngp_window_function(k_grid)
         else:
             # Unknown assignment scheme - skip correction
@@ -1117,39 +1191,7 @@ class PowerSpectrumCalculator:
         
         return power_3d_corrected, k_grid
     
-    def _cic_window_function(self, k_grid: np.ndarray) -> np.ndarray:
-        """
-        Calculate the Cloud-in-Cell window function correction.
-        
-        The CIC window function in k-space is:
-        W_CIC(k) = ∏[sinc(k_i * dx/2)]² for i=x,y,z
-        where sinc(x) = sin(x)/x and dx is the cell size.
-        """
-        dx = self.box_size / self.ngrid
-        
-        # Determine grid dimensions from input k_grid shape
-        # This handles both full grid and slab decomposition cases
-        nx, ny, nz_rfft = k_grid.shape
-        
-        # Create k-component grids with correct dimensions  
-        kx = 2 * np.pi * np.fft.fftfreq(nx, dx)
-        ky = 2 * np.pi * np.fft.fftfreq(ny, dx)  # Use actual slab dimensions
-        kz = 2 * np.pi * np.fft.rfftfreq(self.ngrid, dx)[:nz_rfft]  # Slice to match actual grid shape
-        
-        kx_3d, ky_3d, kz_3d = np.meshgrid(kx, ky, kz, indexing='ij')
-        
-        # Calculate sinc functions for each component
-        def safe_sinc(x):
-            return np.where(x == 0, 1.0, np.sin(x) / x)
-        
-        sinc_x = safe_sinc(kx_3d * dx / 2.0)
-        sinc_y = safe_sinc(ky_3d * dx / 2.0)
-        sinc_z = safe_sinc(kz_3d * dx / 2.0)
-        
-        # CIC window function is product of squared sinc functions
-        return sinc_x**2 * sinc_y**2 * sinc_z**2
-    
-    def _ngp_window_function(self, k_grid: np.ndarray) -> np.ndarray:
+def _ngp_window_function(self, k_grid: np.ndarray) -> np.ndarray:
         """
         Calculate the Nearest Grid Point window function correction.
         
@@ -1368,7 +1410,7 @@ def get_spatial_domain_simple(process_id, n_processes, ngrid, assignment_scheme)
         process_id (int): MPI rank of the current process.
         n_processes (int): Total number of MPI processes.
         ngrid (int): Grid resolution.
-        assignment_scheme (str): Mass assignment scheme ('cic' or 'ngp').
+        assignment_scheme (str): Mass assignment scheme (only 'ngp' supported).
         
     Returns:
         tuple: (y_start, y_end, y_start_ghost, y_end_ghost)
@@ -1384,13 +1426,15 @@ def get_spatial_domain_simple(process_id, n_processes, ngrid, assignment_scheme)
         y_end = ngrid
         
     # Ghost zones are simple integer offsets
-    # CIC requires 1 ghost cell on each side
-    if assignment_scheme.lower() == 'cic':
-        y_start_ghost = max(0, y_start - 1)
-        y_end_ghost = min(ngrid, y_end + 1)
-    else: # NGP needs no ghost zones
-        y_start_ghost = y_start
-        y_end_ghost = y_end
+    # NGP needs no ghost zones - simplified implementation
+    if assignment_scheme.lower() != 'ngp':
+        raise ValueError(
+            f"Assignment method '{assignment_scheme}' is not supported. "
+            f"This simplified implementation only supports 'ngp'."
+        )
+    
+    y_start_ghost = y_start
+    y_end_ghost = y_end
         
     return y_start, y_end, y_start_ghost, y_end_ghost
 
@@ -1423,7 +1467,7 @@ def redistribute_particles_mpi_simple(particles, ngrid, box_size, comm, assignme
     target_process = y_coords_grid // slab_height
     
     # FIXED: Remove incorrect boundary particle reassignment that caused double-counting
-    # Particles should stay in their proper spatial domain - ghost zones handle CIC interpolation
+    # Particles should stay in their proper spatial domain
     # The original boundary logic was causing 1.3% variance excess by double-counting particles
     
     target_process = np.clip(target_process, 0, n_processes - 1)
