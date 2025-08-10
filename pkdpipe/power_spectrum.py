@@ -326,27 +326,32 @@ class PowerSpectrumCalculator:
         
         # NGP-specific simplified path using NGPGridder
         if assignment == 'ngp':
-            # NGPGridder handles its own MPI and slab decomposition
-            # No particle redistribution needed - each process gets all particles and filters to z-slabs
             if process_id == 0:
                 print(f"Using simplified NGP path with NGPGridder")
             
-            # Calculate global particle count
+            # Calculate global particle count before redistribution
             local_particle_count = len(particles['x'])
             self._global_total_particles = comm.allreduce(local_particle_count, op=MPI.SUM)
-            print(f"Process {process_id}: Global particle count (NGP): {self._global_total_particles}, local: {local_particle_count}", flush=True)
+            print(f"Process {process_id}: Global particle count (NGP): {self._global_total_particles}, local before redistribution: {local_particle_count}", flush=True)
+            
+            # CRITICAL: Redistribute particles to match Y-slab decomposition
+            # This ensures each process has the particles for its Y-slabs
+            redistributed_particles, y_start, y_end, y_start_ghost, y_end_ghost = redistribute_particles_mpi_simple(
+                particles, self.ngrid, self.box_size, comm, assignment='ngp'
+            )
+            
+            print(f"Process {process_id}: After redistribution, have {len(redistributed_particles['x'])} particles for Y-slabs [{y_start}, {y_end})", flush=True)
             
             # Convert to physical coordinates if needed
-            positions = np.column_stack([particles['x'], particles['y'], particles['z']])
-            masses = particles.get('mass', None)
+            positions = np.column_stack([redistributed_particles['x'], redistributed_particles['y'], redistributed_particles['z']])
+            masses = redistributed_particles.get('mass', None)
             
             # Use NGPGridder to create local density grid
             local_grid = gridder.grid_particles(positions, masses)
             print(f"Process {process_id}: NGP gridding complete, local_grid shape: {local_grid.shape}", flush=True)
             
-            # Validate particle conservation - don't check against total since NGPGridder
-            # only counts particles assigned to this process's z-slabs
-            gridder.validate_particle_conservation(None)
+            # Validate particle conservation - now we can check against the redistributed total
+            gridder.validate_particle_conservation(len(redistributed_particles['x']))
             
             # Combine local grids into full density grid using NGPGridder's MPI reduction
             full_grid = gridder.reduce_grid(local_grid)

@@ -29,7 +29,7 @@ class NGPGridder:
     without unnecessary abstraction.
     
     Key Design Features:
-    - Simple slab decomposition: each process owns z-slabs of the grid
+    - Simple slab decomposition: each process owns y-slabs of the grid
     - Direct floor division for grid coordinates (avoids coordinate fraud)
     - No ghost cells needed (NGP only uses nearest grid point)
     - Clean MPI reduction for combining local grids
@@ -103,13 +103,13 @@ class NGPGridder:
                 f"ngrid ({ngrid}). Got remainder {ngrid % self.ntasks}"
             )
         
-        # Simple slab decomposition in z-direction
+        # Simple slab decomposition in y-direction (to match FFT requirements)
         slab_size = ngrid // self.ntasks
-        self.z_start = self.rank * slab_size
-        self.z_end = (self.rank + 1) * slab_size
+        self.y_start = self.rank * slab_size
+        self.y_end = (self.rank + 1) * slab_size
         
         # Store slab dimensions for convenience
-        self.local_grid_shape = (ngrid, ngrid, slab_size)
+        self.local_grid_shape = (ngrid, slab_size, ngrid)
         
         # Particle counting for validation
         self.local_particle_count = 0
@@ -122,7 +122,7 @@ class NGPGridder:
         
         This method assigns particles to the nearest grid point using floor division,
         which avoids coordinate fraud issues. Each process only grids particles that
-        fall within its assigned z-slabs, filtering particles by z-coordinate.
+        fall within its assigned y-slabs, filtering particles by y-coordinate.
         
         Args:
             positions: Particle positions array of shape (n_particles, 3)
@@ -131,8 +131,8 @@ class NGPGridder:
                    If None, assumes unit mass for all particles
         
         Returns:
-            Local density grid for this process's z-slabs with shape
-            (ngrid, ngrid, slab_size)
+            Local density grid for this process's y-slabs with shape
+            (ngrid, slab_size, ngrid)
             
         Note:
             This method updates self.local_particle_count with the number of
@@ -150,11 +150,11 @@ class NGPGridder:
         iy = np.floor(positions[:, 1] / self.cell_size).astype(np.int32) % self.ngrid
         iz = np.floor(positions[:, 2] / self.cell_size).astype(np.int32) % self.ngrid
         
-        # Keep only particles in this process's z-slabs
-        mask = (iz >= self.z_start) & (iz < self.z_end)
+        # Keep only particles in this process's y-slabs
+        mask = (iy >= self.y_start) & (iy < self.y_end)
         ix_local = ix[mask]
-        iy_local = iy[mask]
-        iz_local = iz[mask] - self.z_start  # Convert to local z-coordinate
+        iy_local = iy[mask] - self.y_start  # Convert to local y-coordinate
+        iz_local = iz[mask]
         masses_local = masses[mask]
         
         # Track particle counts for validation
@@ -174,13 +174,13 @@ class NGPGridder:
         """
         Combine local grids from all processes into full density grid.
         
-        Uses MPI Allgather to combine the z-slab grids from all processes
+        Uses MPI Allgather to combine the y-slab grids from all processes
         into a complete density grid. This operation ensures all processes
         receive the same full grid for subsequent FFT operations.
         
         Args:
             local_grid: Local density grid for this process with shape
-                       (ngrid, ngrid, slab_size)
+                       (ngrid, slab_size, ngrid)
         
         Returns:
             Full density grid with shape (ngrid, ngrid, ngrid)
@@ -188,26 +188,26 @@ class NGPGridder:
             
         Implementation Details:
             - Uses MPI.Comm.Allgather for efficient grid combination
-            - Reassembles z-slabs in correct order across all processes
+            - Reassembles y-slabs in correct order across all processes
             - Result is identical on all processes for distributed FFT
         """
         # Prepare buffer for full grid
         full_grid = np.zeros((self.ngrid, self.ngrid, self.ngrid), dtype=np.float32)
         
         # Use Allgather to collect all slabs
-        # Each process contributes its z-slab to the appropriate position
-        slab_size = self.local_grid_shape[2]
+        # Each process contributes its y-slab to the appropriate position
+        slab_size = self.local_grid_shape[1]
         
         # Gather all slabs to all processes
-        all_slabs = np.zeros((self.ntasks, self.ngrid, self.ngrid, slab_size), 
+        all_slabs = np.zeros((self.ntasks, self.ngrid, slab_size, self.ngrid), 
                              dtype=np.float32)
         self.comm.Allgather(local_grid, all_slabs)
         
         # Reassemble into full grid
         for rank in range(self.ntasks):
-            z_start = rank * slab_size
-            z_end = (rank + 1) * slab_size
-            full_grid[:, :, z_start:z_end] = all_slabs[rank]
+            y_start = rank * slab_size
+            y_end = (rank + 1) * slab_size
+            full_grid[:, y_start:y_end, :] = all_slabs[rank]
         
         return full_grid
     
