@@ -40,30 +40,12 @@ def has_multiple_gpus():
 MULTI_GPU_AVAILABLE = None  # Will be determined when needed
 
 from pkdpipe.power_spectrum import PowerSpectrumCalculator
-from pkdpipe.particle_gridder import ParticleGridder
+# Removed: from pkdpipe.particle_gridder import ParticleGridder  # ParticleGridder deleted in NGP simplification
 from pkdpipe.data import Data
 
 
-class TestParticleGridder:
-    """Test particle-to-grid mass assignment functionality."""
-    
-    @pytest.fixture
-    def grid_config(self):
-        """Standard grid configuration for testing.""" 
-        return GRID_CONFIG
-
-    def test_gridder_initialization(self, grid_config):
-        """Test ParticleGridder can be initialized with proper parameters."""
-        gridder = ParticleGridder(
-            ngrid=grid_config['ngrid'],
-            box_size=grid_config['box_size'],
-            assignment=grid_config['assignment']
-        )
-        
-        assert gridder.ngrid == grid_config['ngrid']
-        assert gridder.box_size == grid_config['box_size']
-        assert gridder.assignment == grid_config['assignment']
-        assert gridder.grid_spacing == grid_config['box_size'] / grid_config['ngrid']
+# TestParticleGridder class removed - ParticleGridder was deleted during NGP simplification
+# NGP functionality is now handled by NGPGridder class (tested in test_ngp_gridder.py)
 
 class TestPowerSpectrumCalculator:
     """Test power spectrum calculation with known theoretical cases."""

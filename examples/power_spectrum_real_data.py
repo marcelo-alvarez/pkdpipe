@@ -281,7 +281,7 @@ def generate_synthetic_particle_data(process_id=0):
     return result, box_size, sim_params
 
 
-def calculate_power_spectrum(particles_or_data, box_size, ngrid=256, assignment='cic', n_devices=1, save_density_grid=False):
+def calculate_power_spectrum(particles_or_data, box_size, ngrid=256, assignment='ngp', n_devices=1, save_density_grid=False):
     """Calculate the power spectrum of the particle distribution."""
     
     print(f"\n" + "="*60)
@@ -601,7 +601,7 @@ def main():
                        help="Dataset type to read")
     parser.add_argument("--ngrid", type=int, default=256,
                        help="Grid size for power spectrum calculation")
-    parser.add_argument("--assignment", default="cic", choices=["ngp", "cic", "tsc"],
+    parser.add_argument("--assignment", default="ngp", choices=["ngp", "cic", "tsc"],
                        help="Particle assignment scheme")
     parser.add_argument("--n-devices", type=int, default=None,
                        help="Number of GPU devices to use (auto-detects from SLURM if not specified)")

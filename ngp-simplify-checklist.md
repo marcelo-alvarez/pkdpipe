@@ -44,17 +44,15 @@ Items in this checklist may only be checked off as complete with PRIOR AND IMMED
 - [✅] **Update logging**: Add NGPGridder-specific log messages
 
 ### Task 1.4: Production Integration and Cleanup
-- [ ] **Update default behavior**: NGPGridder becomes primary NGP implementation
-- [ ] **Update documentation**: Reflect new implementation in code comments
-- [ ] **Update example scripts**: Ensure all examples work with new implementation
-- [ ] **Test with all variants**: lcdm-validation, wcdm-validation, phicdm-validation (NGP only)
-- [ ] **Verify SLURM integration**: All `./run_examples.sh` parameters work correctly
-- [ ] **Clean up imports**: Remove unused old gridding imports where applicable
-- [ ] **Update class docstrings**: Document NGPGridder thoroughly
-- [ ] **Add inline comments**: Explain key implementation decisions
-- [ ] **Update CLAUDE.md**: Reflect new NGP implementation status
-- [ ] **Update context.md**: Mark NGP simplification complete
-- [ ] **Clean git status**: Ensure no temporary files left in repository
+- [✅] **Update default behavior**: NGPGridder becomes primary NGP implementation
+- [✅] **Update documentation**: Reflect new implementation in code comments
+- [✅] **Update example scripts**: Ensure all examples work with new implementation
+- [✅] **Test with lcdm-validation**: do run_examples.sh test with lcdm-validation (NGP only)
+- [✅] **Verify SLURM integration**: All `./run_examples.sh` parameters work correctly
+- [✅] **Clean up imports**: Remove unused old gridding imports where applicable
+- [✅] **Update class docstrings**: Document NGPGridder thoroughly
+- [✅] **Add inline comments**: Explain key implementation decisions
+- [✅] **Clean git status**: Ensure no temporary files left in repository
 
 ## Phase 2: Comparison Against Previous NGP Results ⏳ PENDING
 

@@ -18,17 +18,27 @@ from mpi4py import MPI
 
 class NGPGridder:
     """
-    Clean, simple NGP particle gridding implementation.
+    Clean, simple NGP particle gridding implementation for cosmological power spectrum analysis.
     
     This class implements Nearest Grid Point (NGP) mass assignment using
     straightforward particle binning with simple slab decomposition for
-    distributed processing.
+    distributed processing across multiple MPI processes.
     
-    Key features:
-    - Simple slab decomposition (each process owns z-slabs)
-    - Direct floor division for grid coordinates
-    - No ghost cells (not needed for NGP)
+    NGPGridder was created as part of NGP simplification to replace the complex
+    ParticleGridder class, focusing on maintainable, correct NGP implementation
+    without unnecessary abstraction.
+    
+    Key Design Features:
+    - Simple slab decomposition: each process owns z-slabs of the grid
+    - Direct floor division for grid coordinates (avoids coordinate fraud)
+    - No ghost cells needed (NGP only uses nearest grid point)
     - Clean MPI reduction for combining local grids
+    - Comprehensive particle conservation validation
+    
+    Requirements:
+    - ntasks must divide evenly into ngrid for proper slab decomposition
+    - Uses MPI for distributed processing (defaults to MPI.COMM_WORLD)
+    - Particles must be in physical coordinates [0, box_size)
     
     Attributes:
         ngrid: Number of grid cells per dimension
@@ -39,6 +49,28 @@ class NGPGridder:
         ntasks: Total number of MPI tasks
         z_start: Starting z-index for this process's slabs
         z_end: Ending z-index for this process's slabs (exclusive)
+        local_grid_shape: Shape of local grid (ngrid, ngrid, slab_size)
+        local_particle_count: Number of particles assigned by this process
+        particles_processed: Total particles seen by this process
+        
+    Example:
+        >>> from pkdpipe.ngp_gridder import NGPGridder
+        >>> import numpy as np
+        >>> from mpi4py import MPI
+        >>> 
+        >>> # Initialize gridder
+        >>> gridder = NGPGridder(ngrid=256, box_size=1050.0)
+        >>> 
+        >>> # Prepare particle data
+        >>> n_particles = 1000000
+        >>> positions = np.random.uniform(0, 1050.0, (n_particles, 3))
+        >>> 
+        >>> # Grid particles and reduce across processes
+        >>> local_grid = gridder.grid_particles(positions)
+        >>> full_grid = gridder.reduce_grid(local_grid)
+        >>> 
+        >>> # Validate particle conservation
+        >>> gridder.validate_particle_conservation(n_particles)
     """
     
     def __init__(self, ngrid: int, box_size: float, comm: Optional[MPI.Comm] = None):
@@ -88,14 +120,23 @@ class NGPGridder:
         """
         Grid particles using simple NGP assignment.
         
+        This method assigns particles to the nearest grid point using floor division,
+        which avoids coordinate fraud issues. Each process only grids particles that
+        fall within its assigned z-slabs, filtering particles by z-coordinate.
+        
         Args:
             positions: Particle positions array of shape (n_particles, 3)
+                      Coordinates should be in physical units [0, box_size)
             masses: Optional particle masses array of shape (n_particles,)
                    If None, assumes unit mass for all particles
         
         Returns:
             Local density grid for this process's z-slabs with shape
             (ngrid, ngrid, slab_size)
+            
+        Note:
+            This method updates self.local_particle_count with the number of
+            particles assigned by this process for validation purposes.
         """
         n_particles = len(positions)
         
@@ -134,7 +175,8 @@ class NGPGridder:
         Combine local grids from all processes into full density grid.
         
         Uses MPI Allgather to combine the z-slab grids from all processes
-        into a complete density grid.
+        into a complete density grid. This operation ensures all processes
+        receive the same full grid for subsequent FFT operations.
         
         Args:
             local_grid: Local density grid for this process with shape
@@ -143,6 +185,11 @@ class NGPGridder:
         Returns:
             Full density grid with shape (ngrid, ngrid, ngrid)
             Note: All processes receive the same full grid
+            
+        Implementation Details:
+            - Uses MPI.Comm.Allgather for efficient grid combination
+            - Reassembles z-slabs in correct order across all processes
+            - Result is identical on all processes for distributed FFT
         """
         # Prepare buffer for full grid
         full_grid = np.zeros((self.ngrid, self.ngrid, self.ngrid), dtype=np.float32)
@@ -173,6 +220,10 @@ class NGPGridder:
             - local_particles: Number of particles assigned by this process
             - total_particles: Total particles across all processes
             - particles_processed: Total particles seen by this process
+            
+        Note:
+            The particle counts are updated by grid_particles() and can be used
+            to validate particle conservation across distributed processing.
         """
         # Reduce particle counts across all processes
         total_particles = self.comm.allreduce(self.local_particle_count, op=MPI.SUM)
@@ -185,13 +236,22 @@ class NGPGridder:
     
     def validate_particle_conservation(self, expected_total: Optional[int] = None) -> bool:
         """
-        Validate that particle conservation is maintained.
+        Validate that particle conservation is maintained across distributed processing.
+        
+        This method checks that the total number of particles assigned across all
+        processes matches the expected count, ensuring no particles are lost or
+        duplicated during distributed gridding.
         
         Args:
             expected_total: Expected total number of particles (if known)
+                           If None, just reports current totals
         
         Returns:
-            True if validation passes, False otherwise
+            True if validation passes, False if mismatch detected
+            
+        Note:
+            Only process 0 prints validation results to avoid cluttered output.
+            All processes return the same validation result.
         """
         counts = self.get_particle_counts()
         
@@ -210,11 +270,20 @@ class NGPGridder:
         """
         Calculate diagnostic statistics for the density grid.
         
+        Provides summary statistics for the gridded density field,
+        useful for validation and debugging of the gridding process.
+        
         Args:
             density_grid: The density grid to analyze
         
         Returns:
-            Dictionary containing grid statistics
+            Dictionary containing grid statistics:
+            - sum: Total density (should equal particle count for unit masses)
+            - mean: Mean density per grid cell
+            - std: Standard deviation of density
+            - min: Minimum density value
+            - max: Maximum density value  
+            - shape: Shape of the density grid
         """
         grid_sum = np.sum(density_grid)
         grid_mean = np.mean(density_grid)
