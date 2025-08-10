@@ -6,7 +6,7 @@ particle binning with simple slab decomposition for distributed processing.
 
 Key assumptions:
 - Number of MPI tasks divides evenly into ngrid
-- Simple slab decomposition in z-direction
+- Simple slab decomposition in y-direction
 - No ghost cells needed for NGP
 - Direct particle binning without complex infrastructure
 """
@@ -18,18 +18,14 @@ from mpi4py import MPI
 
 class NGPGridder:
     """
-    Clean, simple NGP particle gridding implementation for cosmological power spectrum analysis.
+    NGP particle gridding implementation for distributed cosmological power spectrum analysis.
     
     This class implements Nearest Grid Point (NGP) mass assignment using
-    straightforward particle binning with simple slab decomposition for
+    straightforward particle binning with Y-slab decomposition for
     distributed processing across multiple MPI processes.
     
-    NGPGridder was created as part of NGP simplification to replace the complex
-    ParticleGridder class, focusing on maintainable, correct NGP implementation
-    without unnecessary abstraction.
-    
     Key Design Features:
-    - Simple slab decomposition: each process owns y-slabs of the grid
+    - Simple Y-slab decomposition: each process owns y-slabs of the grid
     - Direct floor division for grid coordinates (avoids coordinate fraud)
     - No ghost cells needed (NGP only uses nearest grid point)
     - Clean MPI reduction for combining local grids
@@ -47,9 +43,9 @@ class NGPGridder:
         comm: MPI communicator
         rank: MPI rank of this process
         ntasks: Total number of MPI tasks
-        z_start: Starting z-index for this process's slabs
-        z_end: Ending z-index for this process's slabs (exclusive)
-        local_grid_shape: Shape of local grid (ngrid, ngrid, slab_size)
+        y_start: Starting y-index for this process's slabs
+        y_end: Ending y-index for this process's slabs (exclusive)
+        local_grid_shape: Shape of local grid (ngrid, slab_size, ngrid)
         local_particle_count: Number of particles assigned by this process
         particles_processed: Total particles seen by this process
         
