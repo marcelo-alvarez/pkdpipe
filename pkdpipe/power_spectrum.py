@@ -119,9 +119,9 @@ class PowerSpectrumCalculator:
     """
     Multi-GPU power spectrum calculator using JAX FFT with simplified NGP gridding.
     
-    This calculator implements Nearest Grid Point (NGP) mass assignment using a 
-    clean, maintainable NGPGridder class. CIC support was removed during NGP 
-    simplification to reduce complexity and improve maintainability.
+    This calculator implements both Nearest Grid Point (NGP) and Cloud-in-Cell (CIC)
+    mass assignment using clean, maintainable gridder classes. CIC support has been
+    added for investigating N=5 mode outliers and enabling method comparison.
     
     Provides clean API for computing power spectra from particle distributions
     with proper shot noise handling, k-binning, and optional window function corrections.
@@ -137,9 +137,10 @@ class PowerSpectrumCalculator:
     
     Supported assignment methods:
     - 'ngp': Nearest Grid Point using clean NGPGridder implementation
+    - 'cic': Cloud-in-Cell using CICGridder with proper ghost zone handling
     
-    Note: CIC assignment was removed during NGP simplification. Use NGP for
-    all power spectrum calculations.
+    CIC is particularly useful for investigating low-k behavior and comparing
+    with historical baselines.
     """
     
     def __init__(self, ngrid: int, box_size: float, n_devices: int = 1,
@@ -197,7 +198,7 @@ class PowerSpectrumCalculator:
                 print(f"  k-bins: {len(self.k_bins)-1}")
                 print(f"  k-range: {self.k_bins[0]:.6f} to {self.k_bins[-1]:.6f} h/Mpc")
                 print(f"  Window correction: {'ENABLED' if apply_window_correction else 'DISABLED'}")
-                print(f"  Assignment method: NGP only (simplified implementation)")
+                print(f"  Assignment method: NGP and CIC supported")
                 if is_distributed:
                     print(f"  JAX Distributed Mode: ENABLED ({n_processes} processes)")
                     print(f"  JAX will be initialized after multiprocessing is complete")
@@ -212,9 +213,9 @@ class PowerSpectrumCalculator:
         """
         Calculate power spectrum from particle distribution using NGP assignment.
         
-        This simplified implementation only supports NGP (Nearest Grid Point) mass
-        assignment using the clean NGPGridder class. CIC support was removed during
-        NGP simplification to reduce complexity.
+        This implementation supports both NGP (Nearest Grid Point) and CIC 
+        (Cloud-in-Cell) mass assignment using clean gridder classes. CIC support
+        enables investigation of N=5 mode outliers and method comparison.
         
         For random particles, the power spectrum should equal the shot noise P_shot = V/N.
         
@@ -246,7 +247,7 @@ class PowerSpectrumCalculator:
         n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
         distributed_mode = n_processes > 1
         
-        # Create NGPGridder - simplified implementation supports NGP only
+        # Create gridder based on assignment method
         if assignment == 'ngp':
             from .ngp_gridder import NGPGridder
             
@@ -261,13 +262,27 @@ class PowerSpectrumCalculator:
             # NGPGridder handles its own MPI initialization
             gridder = NGPGridder(self.ngrid, self.box_size)
             if process_id == 0:
-                print(f"Using NGPGridder for NGP assignment (simplified implementation)")
+                print(f"Using NGPGridder for NGP assignment")
+        elif assignment == 'cic':
+            from .cic_gridder import CICGridder
+            
+            # Validate constraints for CICGridder
+            if distributed_mode:
+                if self.ngrid % n_processes != 0:
+                    raise ValueError(
+                        f"For CIC assignment, number of tasks ({n_processes}) must divide "
+                        f"evenly into ngrid ({self.ngrid}). Got remainder {self.ngrid % n_processes}"
+                    )
+            
+            # CICGridder handles its own MPI initialization and ghost zones
+            gridder = CICGridder(self.ngrid, self.box_size)
+            if process_id == 0:
+                print(f"Using CICGridder for CIC assignment with ghost zone handling")
         else:
-            # Only NGP assignment is supported in simplified implementation
+            # Only NGP and CIC assignments are supported
             raise ValueError(
                 f"Assignment method '{assignment}' is not supported. "
-                f"This simplified implementation only supports 'ngp'. "
-                f"CIC support was removed during NGP simplification."
+                f"Supported methods are 'ngp' and 'cic'."
             )
         
         if distributed_mode:
@@ -324,20 +339,20 @@ class PowerSpectrumCalculator:
         if debug_mode:
             print(f"DEBUG: Process {process_id} initialized MPI communicator", flush=True)
         
-        # NGP-specific simplified path using NGPGridder
-        if assignment == 'ngp':
+        # Handle both NGP and CIC in distributed mode
+        if assignment == 'ngp' or assignment == 'cic':
             if process_id == 0:
-                print(f"Using simplified NGP path with NGPGridder")
+                print(f"Using {assignment.upper()} path with {assignment.upper()}Gridder")
             
             # Calculate global particle count before redistribution
             local_particle_count = len(particles['x'])
             self._global_total_particles = comm.allreduce(local_particle_count, op=MPI.SUM)
-            print(f"Process {process_id}: Global particle count (NGP): {self._global_total_particles}, local before redistribution: {local_particle_count}", flush=True)
+            print(f"Process {process_id}: Global particle count ({assignment.upper()}): {self._global_total_particles}, local before redistribution: {local_particle_count}", flush=True)
             
             # CRITICAL: Redistribute particles to match Y-slab decomposition
             # This ensures each process has the particles for its Y-slabs
             redistributed_particles, y_start, y_end, y_start_ghost, y_end_ghost = redistribute_particles_mpi_simple(
-                particles, self.ngrid, self.box_size, comm, assignment='ngp'
+                particles, self.ngrid, self.box_size, comm, assignment=assignment
             )
             
             print(f"Process {process_id}: After redistribution, have {len(redistributed_particles['x'])} particles for Y-slabs [{y_start}, {y_end})", flush=True)
@@ -346,14 +361,14 @@ class PowerSpectrumCalculator:
             positions = np.column_stack([redistributed_particles['x'], redistributed_particles['y'], redistributed_particles['z']])
             masses = redistributed_particles.get('mass', None)
             
-            # Use NGPGridder to create local density grid
+            # Use appropriate gridder to create local density grid
             local_grid = gridder.grid_particles(positions, masses)
-            print(f"Process {process_id}: NGP gridding complete, local_grid shape: {local_grid.shape}", flush=True)
+            print(f"Process {process_id}: {assignment.upper()} gridding complete, local_grid shape: {local_grid.shape}", flush=True)
             
             # Validate particle conservation - now we can check against the redistributed total
             gridder.validate_particle_conservation(len(redistributed_particles['x']))
             
-            # Combine local grids into full density grid using NGPGridder's MPI reduction
+            # Combine local grids into full density grid using gridder's MPI reduction
             full_grid = gridder.reduce_grid(local_grid)
             print(f"Process {process_id}: MPI grid reduction complete, full_grid shape: {full_grid.shape}", flush=True)
             
@@ -362,9 +377,8 @@ class PowerSpectrumCalculator:
             y_start = process_id * slab_height
             y_end = (process_id + 1) * slab_height if process_id != n_processes - 1 else self.ngrid
             
-            # Save density grid if requested (use z-slab format to match expected output)
+            # Save density grid if requested
             if save_density_grid:
-                # For NGP, we need to convert from z-slab to y-slab format for compatibility with save function
                 # Extract this process's y-slab from the full grid for saving
                 owned_slab = full_grid[:, y_start:y_end, :]  # Shape: (ngrid, slab_height, ngrid)
                 self._save_density_grid_distributed(owned_slab, process_id, n_processes)
@@ -374,10 +388,10 @@ class PowerSpectrumCalculator:
             total_mass = comm.allreduce(local_mass, op=MPI.SUM)
             mean_density = total_mass / self.ngrid**3
             
-            print(f"Process {process_id}: NGP mean density: {mean_density:.6e}", flush=True)
+            print(f"Process {process_id}: {assignment.upper()} mean density: {mean_density:.6e}", flush=True)
             
             if mean_density <= 0:
-                raise ValueError(f"Process {process_id}: NGP mean density is zero or negative ({mean_density:.6e})")
+                raise ValueError(f"Process {process_id}: {assignment.upper()} mean density is zero or negative ({mean_density:.6e})")
             
             # Calculate density contrast for the full grid
             delta_grid = (full_grid - mean_density) / mean_density
@@ -387,17 +401,16 @@ class PowerSpectrumCalculator:
             
             # Proceed with standard FFT and power spectrum calculation
             # CRITICAL FIX for BUG-014: Extract local slab for distributed FFT
-            # The NGP gridder gives us the full grid, but JAX distributed FFT needs each process to work with its slab
+            # The gridder gives us the full grid, but JAX distributed FFT needs each process to work with its slab
             y_slab = delta_grid[:, y_start:y_end, :]  # Extract local y-slab
-            print(f"Process {process_id}: Starting NGP FFT with local slab shape {y_slab.shape}", flush=True)
+            print(f"Process {process_id}: Starting {assignment.upper()} FFT with local slab shape {y_slab.shape}", flush=True)
             delta_k = fft(y_slab, direction='r2c')
-            print(f"Process {process_id}: NGP FFT complete, delta_k shape {delta_k.shape}", flush=True)
+            print(f"Process {process_id}: {assignment.upper()} FFT complete, delta_k shape {delta_k.shape}", flush=True)
             
             # Calculate power spectrum
             power_3d = np.abs(delta_k)**2 * (self.volume / self.ngrid**6)
             
             # Create k-grid for this process's k-space slab
-            # For NGP with full grid input, the FFT output follows standard distributed k-space decomposition
             # Calculate equivalent y-slab bounds for k-grid creation
             physical_y_start = y_start * self.box_size / self.ngrid
             physical_y_end = y_end * self.box_size / self.ngrid
@@ -414,10 +427,10 @@ class PowerSpectrumCalculator:
             return self._finalize_power_spectrum(k_binned, power_binned, n_modes,
                                                subtract_shot_noise, self._global_total_particles)
         
-        # Only NGP assignment is supported
+        # Should not reach here given the gridder validation above
         raise ValueError(
             f"Assignment method '{assignment}' is not supported. "
-            f"This simplified implementation only supports 'ngp'."
+            f"Supported methods are 'ngp' and 'cic'."
         )
     
     def _calculate_single_device(self, particles: Dict[str, np.ndarray],
@@ -444,7 +457,7 @@ class PowerSpectrumCalculator:
         
         gridding_start = time.time()
         
-        # Handle NGP gridding using NGPGridder
+        # Handle gridding based on assignment method
         if assignment == 'ngp':
             # NGPGridder has different interface - no n_devices parameter
             positions = np.column_stack([particles['x'], particles['y'], particles['z']])
@@ -456,11 +469,22 @@ class PowerSpectrumCalculator:
             
             # Validate particle conservation
             gridder.validate_particle_conservation(len(particles['x']))
+        elif assignment == 'cic':
+            # CICGridder interface - similar to NGP but with ghost zone handling
+            positions = np.column_stack([particles['x'], particles['y'], particles['z']])
+            masses = particles.get('mass', None)
+            
+            # For single-device CIC, ghost zones are handled internally
+            local_grid = gridder.grid_particles(positions, masses)
+            density_grid = gridder.reduce_grid(local_grid)  # Handles ghost exchange even for single process
+            
+            # Validate particle conservation
+            gridder.validate_particle_conservation(len(particles['x']))
         else:
-            # Only NGP assignment is supported in simplified implementation
+            # Only NGP and CIC assignments are supported
             raise ValueError(
                 f"Assignment method '{assignment}' is not supported. "
-                f"This simplified implementation only supports 'ngp'."
+                f"Supported methods are 'ngp' and 'cic'."
             )
         
         gridding_end = time.time()
@@ -1036,9 +1060,11 @@ class PowerSpectrumCalculator:
         # IMPORTANT: Use the original k_grid to preserve distributed k-space structure
         if assignment.lower() == 'ngp':
             window_correction = self._ngp_window_function(k_grid)
+        elif assignment.lower() == 'cic':
+            window_correction = self._cic_window_function(k_grid)
         else:
-            # Only NGP assignment is supported in simplified implementation
-            print(f"WARNING: Unsupported assignment scheme '{assignment}' in simplified implementation, skipping window correction", flush=True)
+            # Only NGP and CIC assignments are supported
+            print(f"WARNING: Unsupported assignment scheme '{assignment}', skipping window correction", flush=True)
             return power_3d, k_grid
         
         # Apply correction (divide by window function squared)
@@ -1084,6 +1110,20 @@ class PowerSpectrumCalculator:
         # NGP window function is product of sinc functions
         window = sinc_x * sinc_y * sinc_z
         return window
+
+    def _cic_window_function(self, k_grid: np.ndarray) -> np.ndarray:
+        """
+        Calculate the Cloud-in-Cell window function correction.
+        
+        The CIC window function in k-space is:
+        W_CIC(k) = W_NGP(k)^2 = ∏[sinc^2(k_i * dx/2)] for i=x,y,z
+        
+        This is because CIC is equivalent to convolving NGP with a top-hat,
+        resulting in the window function being squared.
+        """
+        # CIC window is NGP window squared
+        ngp_window = self._ngp_window_function(k_grid)
+        return ngp_window  # Return NGP window, will be squared in apply_window_correction
     
     def _finalize_power_spectrum(self, k_binned: np.ndarray, power_binned: np.ndarray,
                                n_modes: np.ndarray, subtract_shot_noise: bool,
@@ -1287,15 +1327,19 @@ def get_spatial_domain_simple(process_id, n_processes, ngrid, assignment_scheme)
         y_end = ngrid
         
     # Ghost zones are simple integer offsets
-    # NGP needs no ghost zones - simplified implementation
-    if assignment_scheme.lower() != 'ngp':
+    if assignment_scheme.lower() == 'ngp':
+        # NGP needs no ghost zones
+        y_start_ghost = y_start
+        y_end_ghost = y_end
+    elif assignment_scheme.lower() == 'cic':
+        # CIC needs 1 ghost cell on each side for interpolation
+        y_start_ghost = max(0, y_start - 1)
+        y_end_ghost = min(ngrid, y_end + 1)
+    else:
         raise ValueError(
             f"Assignment method '{assignment_scheme}' is not supported. "
-            f"This simplified implementation only supports 'ngp'."
+            f"Supported methods are 'ngp' and 'cic'."
         )
-    
-    y_start_ghost = y_start
-    y_end_ghost = y_end
         
     return y_start, y_end, y_start_ghost, y_end_ghost
 
