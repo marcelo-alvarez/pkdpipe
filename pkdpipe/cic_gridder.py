@@ -314,6 +314,8 @@ class CICGridder:
                 if not local_data.flags['C_CONTIGUOUS']:
                     local_data = np.ascontiguousarray(local_data)
                 self.comm.Send(local_data, dest=0, tag=100 + self.rank)
+                # Non-root ranks return None for consistency with NGPGridder
+                full_grid = None
         
         return full_grid
     

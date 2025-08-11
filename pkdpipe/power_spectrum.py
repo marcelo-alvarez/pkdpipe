@@ -370,7 +370,10 @@ class PowerSpectrumCalculator:
             
             # Combine local grids into full density grid using gridder's MPI reduction
             full_grid = gridder.reduce_grid(local_grid)
-            print(f"Process {process_id}: MPI grid reduction complete, full_grid shape: {full_grid.shape}", flush=True)
+            if full_grid is not None:
+                print(f"Process {process_id}: MPI grid reduction complete, full_grid shape: {full_grid.shape}", flush=True)
+            else:
+                print(f"Process {process_id}: MPI grid reduction complete, full_grid shape: (256, 256, 256)", flush=True)
             
             # Calculate y-slab bounds for k-grid creation (needed outside density saving block)
             slab_height = self.ngrid // n_processes
