@@ -126,60 +126,93 @@ class CICGridder:
         grid_coords[grid_coords < 0] += self.ngrid
         
         # CIC assignment
-        for i in range(n_particles):
-            x, y, z = grid_coords[i]
-            mass = masses[i]
-            
-            # Find lower-left-back corner cell
-            ix = int(np.floor(x)) % self.ngrid
-            iy = int(np.floor(y)) % self.ngrid
-            iz = int(np.floor(z)) % self.ngrid
-            
-            # Calculate fractional position within cell
-            dx = x - np.floor(x)
-            dy = y - np.floor(y)
-            dz = z - np.floor(z)
-            
-            # Check if this particle affects our slab (including ghost zones)
-            # We need particles that affect y in [y_start-1, y_end+1)
-            y_cells = [iy, (iy + 1) % self.ngrid]
-            
-            contributes_to_slab = False
-            for yc in y_cells:
-                if self.y_start - 1 <= yc < self.y_end + 1:
-                    contributes_to_slab = True
-                    break
-            
-            if not contributes_to_slab:
-                continue
-            
-            self.local_particle_count += 1
-            
-            # Distribute mass to 8 neighboring cells with CIC weights
-            for di in range(2):
-                for dj in range(2):
-                    for dk in range(2):
-                        # Cell indices with periodic wrapping
-                        cell_x = (ix + di) % self.ngrid
-                        cell_y = (iy + dj) % self.ngrid
-                        cell_z = (iz + dk) % self.ngrid
-                        
-                        # Check if this cell is in our extended slab (including ghosts)
-                        if not (self.y_start - 1 <= cell_y < self.y_end + 1):
-                            continue
-                        
-                        # Convert to local y index (offset by 1 for bottom ghost)
-                        local_y = cell_y - self.y_start + 1
-                        
-                        # CIC weight
-                        wx = (1.0 - dx) if di == 0 else dx
-                        wy = (1.0 - dy) if dj == 0 else dy
-                        wz = (1.0 - dz) if dk == 0 else dz
-                        weight = wx * wy * wz
-                        
-                        # Add contribution
-                        local_grid[cell_x, local_y, cell_z] += mass * weight
+        print(f"CIC: Starting particle loop with {n_particles:,} particles", flush=True)
         
+        if n_particles == 0:
+            print("CIC: No particles to process", flush=True)
+            return local_grid
+        
+        # VECTORIZED CIC assignment
+        x = grid_coords[:, 0]
+        y = grid_coords[:, 1] 
+        z = grid_coords[:, 2]
+        
+        # Find lower-left-back corner cells (vectorized)
+        ix = np.floor(x).astype(np.int32) % self.ngrid
+        iy = np.floor(y).astype(np.int32) % self.ngrid
+        iz = np.floor(z).astype(np.int32) % self.ngrid
+        
+        # Calculate fractional positions (vectorized)
+        dx = x - np.floor(x)
+        dy = y - np.floor(y)
+        dz = z - np.floor(z)
+        
+        # Filter particles that contribute to our slab
+        y_affects_slab = ((self.y_start - 1 <= iy) & (iy < self.y_end + 1)) | \
+                         ((self.y_start - 1 <= (iy + 1) % self.ngrid) & ((iy + 1) % self.ngrid < self.y_end + 1))
+        
+        if not np.any(y_affects_slab):
+            print("CIC: No particles affect this slab", flush=True)
+            return local_grid
+            
+        # Filter to particles affecting this slab
+        relevant_mask = y_affects_slab
+        n_relevant = np.sum(relevant_mask)
+        print(f"CIC: {n_relevant:,}/{n_particles:,} particles affect this slab", flush=True)
+        self.local_particle_count = n_relevant
+        
+        ix = ix[relevant_mask]
+        iy = iy[relevant_mask]  
+        iz = iz[relevant_mask]
+        dx = dx[relevant_mask]
+        dy = dy[relevant_mask]
+        dz = dz[relevant_mask]
+        masses = masses[relevant_mask]
+        
+        # Vectorized 8-point interpolation
+        print(f"CIC: Starting 8-point interpolation for {n_relevant:,} particles", flush=True)
+        
+        for di in range(2):
+            for dj in range(2):  
+                for dk in range(2):
+                    print(f"CIC: Processing corner {di},{dj},{dk}", flush=True)
+                    
+                    # Cell indices with periodic wrapping
+                    cell_x = (ix + di) % self.ngrid
+                    cell_y = (iy + dj) % self.ngrid
+                    cell_z = (iz + dk) % self.ngrid
+                    
+                    # Filter cells in our extended slab
+                    in_slab = (self.y_start - 1 <= cell_y) & (cell_y < self.y_end + 1)
+                    n_in_slab = np.sum(in_slab)
+                    print(f"CIC: Corner {di},{dj},{dk}: {n_in_slab:,} particles in slab", flush=True)
+                    
+                    if n_in_slab == 0:
+                        continue
+                    
+                    # Convert to local y coordinates 
+                    local_y = cell_y - self.y_start + 1
+                    
+                    # Calculate weights (vectorized)
+                    wx = np.where(di == 0, 1.0 - dx, dx)
+                    wy = np.where(dj == 0, 1.0 - dy, dy)
+                    wz = np.where(dk == 0, 1.0 - dz, dz)
+                    weights = masses * wx * wy * wz
+                    
+                    # Add contributions only for particles in slab (vectorized)
+                    print(f"CIC: Adding contributions for corner {di},{dj},{dk}", flush=True)
+                    valid_mask = in_slab
+                    if np.any(valid_mask):
+                        # Flatten indices for np.add.at
+                        flat_indices = (cell_x[valid_mask] * (self.local_grid_shape[1] * self.local_grid_shape[2]) +
+                                       local_y[valid_mask] * self.local_grid_shape[2] +
+                                       cell_z[valid_mask])
+                        # Vectorized accumulation
+                        np.add.at(local_grid.ravel(), flat_indices, weights[valid_mask])
+                    
+                    print(f"CIC: Completed corner {di},{dj},{dk}", flush=True)
+        
+        print(f"CIC: Completed particle loop, processed {n_particles:,} particles", flush=True)
         return local_grid
     
     def exchange_ghosts(self, local_grid: np.ndarray) -> np.ndarray:

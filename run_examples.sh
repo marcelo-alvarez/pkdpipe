@@ -117,21 +117,41 @@ while [[ $# -gt 0 ]]; do
             NODES="${1#*=}"
             shift
             ;;
+        --nodes)
+            NODES="$2"
+            shift 2
+            ;;
         --time=*)
             TIME="${1#*=}"
             shift
+            ;;
+        --time)
+            TIME="$2"
+            shift 2
             ;;
         --ntasks=*)
             NTASKS_ARG="${1#*=}"
             shift
             ;;
+        --ntasks)
+            NTASKS_ARG="$2"
+            shift 2
+            ;;
         --cpus-per-task=*)
             CPUS_PER_TASK="${1#*=}"
             shift
             ;;
+        --cpus-per-task)
+            CPUS_PER_TASK="$2"
+            shift 2
+            ;;
         --gpus-per-node=*)
             GPUS_PER_NODE="${1#*=}"
             shift
+            ;;
+        --gpus-per-node)
+            GPUS_PER_NODE="$2"
+            shift 2
             ;;
         *)
             # Pass all other arguments to the example script
