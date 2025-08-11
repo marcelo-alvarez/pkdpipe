@@ -66,13 +66,29 @@ def fft(x_np, direction='r2c'):
             import jax
             import jax.distributed
             
-            coordinator_address = os.environ.get('SLURM_STEP_NODELIST', 'localhost').split(',')[0]
-            # Clean up SLURM nodelist format
-            if '[' in coordinator_address:
-                coordinator_address = coordinator_address.split('[')[0] + coordinator_address.split('[')[1].split('-')[0].replace(']', '')
+            # Get coordinator from SLURM nodelist with better error handling
+            nodelist = os.environ.get('SLURM_STEP_NODELIST', 'localhost')
+            print(f"Raw SLURM_STEP_NODELIST: {nodelist}", flush=True)
+            coordinator_address = nodelist.split(',')[0]
             
-            print(f"JAX distributed coordinator: {coordinator_address}:63025", flush=True)
+            # Clean up SLURM nodelist format more carefully  
+            if '[' in coordinator_address:
+                base_name = coordinator_address.split('[')[0]
+                range_part = coordinator_address.split('[')[1].split('-')[0].replace(']', '')
+                coordinator_address = base_name + range_part
+                
+            print(f"Parsed coordinator address: {coordinator_address}", flush=True)
             print(f"JAX distributed processes: {slurm_ntasks}, process_id: {os.environ.get('SLURM_PROCID', 0)}", flush=True)
+            
+            # Add MPI barrier before JAX distributed init to ensure all processes are ready
+            try:
+                from mpi4py import MPI
+                comm = MPI.COMM_WORLD  
+                print(f"Process {comm.Get_rank()}: At MPI barrier before JAX distributed init", flush=True)
+                comm.Barrier()
+                print(f"Process {comm.Get_rank()}: Past MPI barrier, initializing JAX distributed", flush=True)
+            except ImportError:
+                print("MPI not available for barrier, proceeding with JAX distributed init", flush=True)
             
             # Initialize distributed mode BEFORE any other JAX operations
             jax.distributed.initialize(
