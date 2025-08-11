@@ -310,7 +310,9 @@ class CICGridder:
                     self.comm.Recv(recv_buffer, source=source_rank, tag=100 + source_rank)
                     full_grid[:, slab_start:slab_end, :] = recv_buffer
             else:
-                # Send to rank 0
+                # Send to rank 0 (ensure contiguous array for MPI)
+                if not local_data.flags['C_CONTIGUOUS']:
+                    local_data = np.ascontiguousarray(local_data)
                 self.comm.Send(local_data, dest=0, tag=100 + self.rank)
         
         return full_grid
@@ -360,9 +362,15 @@ class CICGridder:
         """
         counts = self.get_particle_counts()
         
+        # First gather the global expected count (in case we were passed local counts)
+        expected_global = np.array([expected_particles], dtype=np.int64)
+        total_expected = np.zeros(1, dtype=np.int64)
+        self.comm.Reduce(expected_global, total_expected, op=MPI.SUM, root=0)
+        
         if self.rank == 0:
             assigned = counts['global_assigned']
             processed = counts['global_processed']
+            expected_particles = total_expected[0]  # Use the global total
             
             # Check that we processed all particles
             if processed != expected_particles * self.ntasks:
