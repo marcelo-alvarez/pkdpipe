@@ -62,7 +62,8 @@ def fft(x_np, direction='r2c'):
         print("Initializing JAX distributed mode in fft()...", flush=True)
         
         try:
-            # CRITICAL: Only import jax.distributed, no other JAX modules yet
+            # CRITICAL: Import jax first, then jax.distributed
+            import jax
             import jax.distributed
             
             coordinator_address = os.environ.get('SLURM_STEP_NODELIST', 'localhost').split(',')[0]
@@ -87,7 +88,9 @@ def fft(x_np, direction='r2c'):
     
     # NOW safe to import other JAX modules after distributed mode is set up
     try:
-        import jax
+        # JAX already imported in distributed block if needed, check if we need to import it
+        if 'jax' not in locals():
+            import jax
         from jax import jit
         from jax.experimental import mesh_utils
         from jax.experimental.multihost_utils import sync_global_devices
