@@ -368,6 +368,7 @@ class PowerSpectrumCalculator:
             gridder.validate_particle_conservation(len(redistributed_particles['x']))
             
             # NEW SLAB-BASED ARCHITECTURE: reduce_grid() returns slabs consistently
+            print(f"Process {process_id}: About to call reduce_grid(), local_grid shape: {local_grid.shape}", flush=True)
             grid_slab = gridder.reduce_grid(local_grid)  # Shape: (ngrid, slab_height, ngrid)
             print(f"Process {process_id}: Grid reduction complete, grid_slab shape: {grid_slab.shape}", flush=True)
             
@@ -385,8 +386,11 @@ class PowerSpectrumCalculator:
                     self._save_density_grid_distributed(owned_slab, process_id, n_processes)
             
             # Calculate mean density using MPI reduction on slab data
+            print(f"Process {process_id}: About to calculate slab_mass", flush=True)
             slab_mass = np.sum(grid_slab)
+            print(f"Process {process_id}: slab_mass = {slab_mass}, about to call MPI allreduce", flush=True)
             total_mass = comm.allreduce(slab_mass, op=MPI.SUM)
+            print(f"Process {process_id}: MPI allreduce complete, total_mass = {total_mass}", flush=True)
             mean_density = total_mass / self.ngrid**3
             
             print(f"Process {process_id}: {assignment.upper()} mean density: {mean_density:.6e}", flush=True)
