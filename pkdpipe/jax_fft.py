@@ -58,7 +58,7 @@ def fft(x_np, direction='r2c'):
     is_distributed = slurm_ntasks and int(slurm_ntasks) > 1
     
     if is_distributed:
-        # Initialize JAX distributed mode BEFORE importing ANY other JAX modules
+        # Initialize JAX distributed mode BEFORE any other JAX operations
         print("Initializing JAX distributed mode in fft()...", flush=True)
         
         try:
@@ -69,6 +69,9 @@ def fft(x_np, direction='r2c'):
             # Clean up SLURM nodelist format
             if '[' in coordinator_address:
                 coordinator_address = coordinator_address.split('[')[0] + coordinator_address.split('[')[1].split('-')[0].replace(']', '')
+            
+            print(f"JAX distributed coordinator: {coordinator_address}:63025", flush=True)
+            print(f"JAX distributed processes: {slurm_ntasks}, process_id: {os.environ.get('SLURM_PROCID', 0)}", flush=True)
             
             # Initialize distributed mode BEFORE any other JAX operations
             jax.distributed.initialize(
