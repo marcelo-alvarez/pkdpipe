@@ -220,26 +220,25 @@ class CICGridder(BaseGridder):
         """
         return self.assign_particles_to_grid(positions, masses)
     
-    def reduce_grid(self, local_grid: np.ndarray) -> Optional[np.ndarray]:
+    def reduce_grid(self, local_grid: np.ndarray) -> np.ndarray:
         """
-        Reduce local grids across all MPI processes to form the full grid.
+        Return this process's Y-slab after processing ghost exchanges.
         
-        This method first exchanges ghost cells, then extracts the non-ghost
-        portion and performs an MPI reduction to combine all local grids.
-        CIC uses Send/Recv style so only rank 0 gets the full grid.
+        This method exchanges ghost cells between processes, then extracts
+        and returns only the non-ghost slab portion. This implements the 
+        slab-based architecture where all processes return valid slabs.
         
         Args:
             local_grid: Local grid with ghost zones, shape (ngrid, slab_size+2, ngrid)
         
         Returns:
-            On rank 0: Full reduced grid of shape (ngrid, ngrid, ngrid)
-            On other ranks: None
+            Y-slab for this process with shape (ngrid, slab_size, ngrid)
+            (non-ghost portion after ghost exchange)
         """
-        # Exchange ghost cells
+        # Exchange ghost cells between neighboring processes
         local_grid = self.exchange_ghosts(local_grid)
         
-        # Extract non-ghost portion (indices 1 to -1 in y)
-        local_data = local_grid[:, 1:-1, :]  # Shape: (ngrid, slab_size, ngrid)
+        # Extract and return non-ghost portion (indices 1 to -1 in y)
+        grid_slab = local_grid[:, 1:-1, :]  # Shape: (ngrid, slab_size, ngrid)
         
-        # Use base class Send/Recv reduction
-        return self.reduce_grid_send(local_data)
+        return grid_slab

@@ -19,13 +19,14 @@ class BaseGridder(ABC):
     This class contains all shared infrastructure for distributed particle
     gridding, including MPI communication, particle counting, validation,
     and grid reduction. Derived classes only need to implement the specific
-    particle assignment method.
+    particle assignment method and slab-based grid reduction.
     
     Key Shared Features:
     - Y-slab decomposition for distributed processing
     - MPI communication setup and management
     - Particle conservation validation
-    - Grid reduction across processes
+    - Slab-based grid reduction for memory efficiency
+    - Full grid reconstruction when needed for output
     - Consistent return value contracts
     - Particle counting and diagnostics
     
@@ -108,6 +109,73 @@ class BaseGridder(ABC):
             for proper validation.
         """
         pass
+    
+    @abstractmethod
+    def reduce_grid(self, local_grid: np.ndarray) -> np.ndarray:
+        """
+        Abstract method for reducing local grid to final slab.
+        
+        This method should return only this process's Y-slab portion of the
+        density grid. This is the core of the slab-based architecture that
+        provides memory efficiency and consistency.
+        
+        Args:
+            local_grid: Local density grid from assign_particles_to_grid
+        
+        Returns:
+            Final Y-slab for this process with shape (ngrid, slab_height, ngrid)
+            where slab_height = ngrid // ntasks
+            
+        Note:
+            - NGP: May need to slice from gathered full grid to return slab
+            - CIC: Should exchange ghosts then return non-ghost slab portion
+            - All processes return valid slabs, no None values
+        """
+        pass
+    
+    def gather_full_grid(self, grid_slab: np.ndarray) -> Optional[np.ndarray]:
+        """
+        Gather Y-slabs from all processes to reconstruct full density grid.
+        
+        This method is used when full grid is needed for output files, statistics,
+        or analysis. It should only be called when explicitly needed to maintain
+        memory efficiency of slab-based processing.
+        
+        Args:
+            grid_slab: This process's Y-slab with shape (ngrid, slab_size, ngrid)
+        
+        Returns:
+            On rank 0: Full density grid with shape (ngrid, ngrid, ngrid)  
+            On other ranks: None
+        """
+        if self.ntasks == 1:
+            # Single process case
+            return grid_slab.copy()
+        
+        if self.rank == 0:
+            # Initialize full grid on rank 0
+            full_grid = np.zeros((self.ngrid, self.ngrid, self.ngrid), dtype=grid_slab.dtype)
+            
+            # Place rank 0's slab
+            full_grid[:, self.y_start:self.y_end, :] = grid_slab
+            
+            # Receive slabs from other ranks
+            for source_rank in range(1, self.ntasks):
+                slab_start = source_rank * self.slab_size
+                slab_end = (source_rank + 1) * self.slab_size
+                recv_buffer = np.zeros((self.ngrid, self.slab_size, self.ngrid), dtype=grid_slab.dtype)
+                self.comm.Recv(recv_buffer, source=source_rank, tag=200 + source_rank)
+                full_grid[:, slab_start:slab_end, :] = recv_buffer
+            
+            return full_grid
+        else:
+            # Send slab to rank 0 (ensure contiguous array for MPI)
+            if not grid_slab.flags['C_CONTIGUOUS']:
+                grid_slab = np.ascontiguousarray(grid_slab)
+            self.comm.Send(grid_slab, dest=0, tag=200 + self.rank)
+            
+            # Non-root ranks return None
+            return None
     
     def get_particle_counts(self) -> Dict[str, int]:
         """
@@ -195,6 +263,9 @@ class BaseGridder(ABC):
         This method uses Allgather to combine y-slab grids from all processes
         into a complete density grid. All processes receive the same full grid.
         
+        DEPRECATED: Use reduce_grid() for slab-based processing or 
+        gather_full_grid() for full grid reconstruction.
+        
         Args:
             local_grid: Local density grid for this process
         
@@ -239,6 +310,9 @@ class BaseGridder(ABC):
         
         This method gathers local grids to rank 0 only. Other ranks return None.
         This is used when only rank 0 needs the full grid (e.g., for I/O).
+        
+        DEPRECATED: Use reduce_grid() for slab-based processing or
+        gather_full_grid() for full grid reconstruction.
         
         Args:
             local_grid: Local density grid for this process

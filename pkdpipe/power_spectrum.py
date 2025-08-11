@@ -314,12 +314,11 @@ class PowerSpectrumCalculator:
                              gridder, subtract_shot_noise: bool,
                              assignment: str, save_density_grid: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
         """
-        Calculate power spectrum in distributed multi-process mode with spatial decomposition.
+        Calculate power spectrum in distributed multi-process mode with slab-based processing.
         
-        This method implements proper spatial domain decomposition where each process
-        handles a spatial slab (e.g., y ∈ [0, 128] for process 0) rather than arbitrary
-        chunks. Particles are redistributed using MPI4py to ensure each
-        particle ends up on the process responsible for its spatial region.
+        This method implements slab-based distributed processing where each process
+        works with only its Y-slab portion throughout the pipeline. This provides
+        memory efficiency and consistency across NGP and CIC methods.
         """
         
 
@@ -342,7 +341,7 @@ class PowerSpectrumCalculator:
         # Handle both NGP and CIC in distributed mode
         if assignment == 'ngp' or assignment == 'cic':
             if process_id == 0:
-                print(f"Using {assignment.upper()} path with {assignment.upper()}Gridder")
+                print(f"Using {assignment.upper()} path with slab-based {assignment.upper()}Gridder")
             
             # Calculate global particle count before redistribution
             local_particle_count = len(particles['x'])
@@ -368,27 +367,26 @@ class PowerSpectrumCalculator:
             # Validate particle conservation - now we can check against the redistributed total
             gridder.validate_particle_conservation(len(redistributed_particles['x']))
             
-            # Combine local grids into full density grid using gridder's MPI reduction
-            full_grid = gridder.reduce_grid(local_grid)
-            if full_grid is not None:
-                print(f"Process {process_id}: MPI grid reduction complete, full_grid shape: {full_grid.shape}", flush=True)
-            else:
-                print(f"Process {process_id}: MPI grid reduction complete, full_grid shape: (256, 256, 256)", flush=True)
+            # NEW SLAB-BASED ARCHITECTURE: reduce_grid() returns slabs consistently
+            grid_slab = gridder.reduce_grid(local_grid)  # Shape: (ngrid, slab_height, ngrid)
+            print(f"Process {process_id}: Grid reduction complete, grid_slab shape: {grid_slab.shape}", flush=True)
             
-            # Calculate y-slab bounds for k-grid creation (needed outside density saving block)
+            # Calculate slab bounds for this process
             slab_height = self.ngrid // n_processes
             y_start = process_id * slab_height
             y_end = (process_id + 1) * slab_height if process_id != n_processes - 1 else self.ngrid
             
-            # Save density grid if requested
+            # Save density grid if requested - reconstruct full grid when needed
             if save_density_grid:
-                # Extract this process's y-slab from the full grid for saving
-                owned_slab = full_grid[:, y_start:y_end, :]  # Shape: (ngrid, slab_height, ngrid)
-                self._save_density_grid_distributed(owned_slab, process_id, n_processes)
+                full_grid = gridder.gather_full_grid(grid_slab)
+                if full_grid is not None:  # Only rank 0 gets the full grid
+                    # Extract this process's y-slab from the full grid for saving
+                    owned_slab = full_grid[:, y_start:y_end, :]  # Shape: (ngrid, slab_height, ngrid)
+                    self._save_density_grid_distributed(owned_slab, process_id, n_processes)
             
-            # Calculate mean density and density contrast
-            local_mass = np.sum(full_grid) / n_processes  # Each process has the full grid, so divide by n_processes
-            total_mass = comm.allreduce(local_mass, op=MPI.SUM)
+            # Calculate mean density using MPI reduction on slab data
+            slab_mass = np.sum(grid_slab)
+            total_mass = comm.allreduce(slab_mass, op=MPI.SUM)
             mean_density = total_mass / self.ngrid**3
             
             print(f"Process {process_id}: {assignment.upper()} mean density: {mean_density:.6e}", flush=True)
@@ -396,18 +394,15 @@ class PowerSpectrumCalculator:
             if mean_density <= 0:
                 raise ValueError(f"Process {process_id}: {assignment.upper()} mean density is zero or negative ({mean_density:.6e})")
             
-            # Calculate density contrast for the full grid
-            delta_grid = (full_grid - mean_density) / mean_density
+            # Calculate density contrast directly on slab (no full grid needed)
+            delta_slab = (grid_slab - mean_density) / mean_density
             
-            # Store diagnostics (use full grid since all processes have it)
-            self._store_density_diagnostics(full_grid, delta_grid, len(particles['x']))
+            # Store diagnostics using slab data
+            self._store_density_diagnostics(grid_slab, delta_slab, len(redistributed_particles['x']))
             
-            # Proceed with standard FFT and power spectrum calculation
-            # CRITICAL FIX for BUG-014: Extract local slab for distributed FFT
-            # The gridder gives us the full grid, but JAX distributed FFT needs each process to work with its slab
-            y_slab = delta_grid[:, y_start:y_end, :]  # Extract local y-slab
-            print(f"Process {process_id}: Starting {assignment.upper()} FFT with local slab shape {y_slab.shape}", flush=True)
-            delta_k = fft(y_slab, direction='r2c')
+            # SLAB-BASED FFT: Process slab directly (no slicing needed)
+            print(f"Process {process_id}: Starting {assignment.upper()} FFT with slab shape {delta_slab.shape}", flush=True)
+            delta_k = fft(delta_slab, direction='r2c')
             print(f"Process {process_id}: {assignment.upper()} FFT complete, delta_k shape {delta_k.shape}", flush=True)
             
             # Calculate power spectrum

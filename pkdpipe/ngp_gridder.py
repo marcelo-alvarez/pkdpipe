@@ -99,17 +99,19 @@ class NGPGridder(BaseGridder):
     
     def reduce_grid(self, local_grid: np.ndarray) -> np.ndarray:
         """
-        Combine local grids from all processes into full density grid.
+        Return this process's Y-slab from local grid.
         
-        NGP uses Allgather so all processes receive the full grid for FFT operations.
+        NGP generates local grids that are already the correct slab size,
+        so this method simply returns the local_grid directly. This implements
+        the slab-based architecture for memory efficiency.
         
         Args:
-            local_grid: Local density grid for this process
+            local_grid: Local density grid for this process's y-slabs
         
         Returns:
-            Full density grid with shape (ngrid, ngrid, ngrid) on all processes
+            Y-slab for this process with shape (ngrid, slab_size, ngrid)
         """
-        return self.reduce_grid_gather(local_grid)
+        return local_grid
     
     def get_particle_counts(self) -> Dict[str, int]:
         """
