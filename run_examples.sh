@@ -154,7 +154,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         *)
-            # Pass all other arguments to the example script
+            # Pass all other arguments to the example script (excluding SLURM-only params)
             EXAMPLE_ARGS+=("$1")
             shift
             ;;

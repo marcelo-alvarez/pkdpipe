@@ -188,6 +188,9 @@ class PowerSpectrumCalculator:
             n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
             is_distributed = n_processes > 1  # Infer distributed mode from SLURM
             
+            # Enhanced debugging output
+            print(f"[PowerSpectrum] Process {process_id}/{n_processes}: Initializing calculator", flush=True)
+            
             # DEBUG: Print k-bin edges for comparison
             
             if process_id == 0:
@@ -204,6 +207,9 @@ class PowerSpectrumCalculator:
                     print(f"  JAX will be initialized after multiprocessing is complete")
                 else:
                     print(f"  JAX Distributed Mode: DISABLED (using {n_devices} device(s))")
+            
+            # All processes report their status
+            print(f"[PowerSpectrum] Process {process_id}: Initialization complete", flush=True)
 
     
     def calculate_power_spectrum(self, particles,
@@ -239,13 +245,17 @@ class PowerSpectrumCalculator:
         """
         # DEBUG: Track which processes enter the power spectrum calculation
         process_id = int(os.environ.get('SLURM_PROCID', '0'))
+        n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
+        
+        print(f"[PowerSpectrum] Process {process_id}: Starting power spectrum calculation", flush=True)
+        print(f"[PowerSpectrum] Process {process_id}: Assignment={assignment}, shot_noise={subtract_shot_noise}", flush=True)
         
         # Validate input
         self._validate_particles(particles)
         
         # Check execution mode using SLURM environment (no JAX needed yet)
-        n_processes = int(os.environ.get('SLURM_NTASKS', '1'))
         distributed_mode = n_processes > 1
+        print(f"[PowerSpectrum] Process {process_id}: Mode={'distributed' if distributed_mode else 'single'} with {n_processes} processes", flush=True)
         
         # Create gridder based on assignment method
         if assignment == 'ngp':
@@ -259,6 +269,7 @@ class PowerSpectrumCalculator:
                         f"evenly into ngrid ({self.ngrid}). Got remainder {self.ngrid % n_processes}"
                     )
             
+            print(f"[PowerSpectrum] Process {process_id}: Initializing NGPGridder", flush=True)
             # NGPGridder handles its own MPI initialization
             gridder = NGPGridder(self.ngrid, self.box_size)
             if process_id == 0:
@@ -274,6 +285,7 @@ class PowerSpectrumCalculator:
                         f"evenly into ngrid ({self.ngrid}). Got remainder {self.ngrid % n_processes}"
                     )
             
+            print(f"[PowerSpectrum] Process {process_id}: Initializing CICGridder", flush=True)
             # CICGridder handles its own MPI initialization and ghost zones
             gridder = CICGridder(self.ngrid, self.box_size)
             if process_id == 0:
@@ -285,10 +297,14 @@ class PowerSpectrumCalculator:
                 f"Supported methods are 'ngp' and 'cic'."
             )
         
+        print(f"[PowerSpectrum] Process {process_id}: Gridder initialized, proceeding to calculation", flush=True)
+        
         if distributed_mode:
+            print(f"[PowerSpectrum] Process {process_id}: Calling _calculate_distributed", flush=True)
             return self._calculate_distributed(
                 particles, gridder, subtract_shot_noise, assignment, save_density_grid)
         else:
+            print(f"[PowerSpectrum] Process {process_id}: Calling _calculate_single_device", flush=True)
             return self._calculate_single_device(particles, gridder, subtract_shot_noise, assignment, save_density_grid)
     
     def _validate_particles(self, particles: Dict[str, np.ndarray]) -> None:
@@ -314,14 +330,12 @@ class PowerSpectrumCalculator:
                              gridder, subtract_shot_noise: bool,
                              assignment: str, save_density_grid: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
         """
-        Calculate power spectrum in distributed multi-process mode with slab-based processing.
+        Calculate power spectrum in distributed multi-process mode with enhanced hang detection.
         
         This method implements slab-based distributed processing where each process
         works with only its Y-slab portion throughout the pipeline. This provides
         memory efficiency and consistency across NGP and CIC methods.
         """
-        
-
         
         # Use SLURM environment variables instead of JAX to avoid early JAX initialization
         process_id = int(os.environ.get('SLURM_PROCID', '0'))
@@ -331,6 +345,13 @@ class PowerSpectrumCalculator:
         if debug_mode:
             print(f"DEBUG: Process {process_id} ENTERED _calculate_distributed", flush=True)
         
+        # Import timeout monitoring
+        import time
+        import threading
+        
+        start_time = time.time()
+        print(f"[PowerSpectrum] Process {process_id}: Starting distributed calculation at {start_time:.2f}", flush=True)
+        
         # Use global MPI communicator
         if not _MPI_AVAILABLE:
             raise ImportError("MPI4py required for distributed mode but not available")
@@ -338,102 +359,269 @@ class PowerSpectrumCalculator:
         if debug_mode:
             print(f"DEBUG: Process {process_id} initialized MPI communicator", flush=True)
         
-        # Handle both NGP and CIC in distributed mode
-        if assignment == 'ngp' or assignment == 'cic':
-            if process_id == 0:
-                print(f"Using {assignment.upper()} path with slab-based {assignment.upper()}Gridder")
-            
-            # Calculate global particle count before redistribution
-            local_particle_count = len(particles['x'])
-            self._global_total_particles = comm.allreduce(local_particle_count, op=MPI.SUM)
-            print(f"Process {process_id}: Global particle count ({assignment.upper()}): {self._global_total_particles}, local before redistribution: {local_particle_count}", flush=True)
-            
-            # CRITICAL: Redistribute particles to match Y-slab decomposition
-            # This ensures each process has the particles for its Y-slabs
-            redistributed_particles, y_start, y_end, y_start_ghost, y_end_ghost = redistribute_particles_mpi_simple(
-                particles, self.ngrid, self.box_size, comm, assignment=assignment
-            )
-            
-            print(f"Process {process_id}: After redistribution, have {len(redistributed_particles['x'])} particles for Y-slabs [{y_start}, {y_end})", flush=True)
-            
-            # Convert to physical coordinates if needed
-            positions = np.column_stack([redistributed_particles['x'], redistributed_particles['y'], redistributed_particles['z']])
-            masses = redistributed_particles.get('mass', None)
-            
-            # Use appropriate gridder to create local density grid
-            local_grid = gridder.grid_particles(positions, masses)
-            print(f"Process {process_id}: {assignment.upper()} gridding complete, local_grid shape: {local_grid.shape}", flush=True)
-            
-            # Validate particle conservation - now we can check against the redistributed total
-            gridder.validate_particle_conservation(len(redistributed_particles['x']))
-            
-            # NEW SLAB-BASED ARCHITECTURE: reduce_grid() returns slabs consistently
-            print(f"Process {process_id}: About to call reduce_grid(), local_grid shape: {local_grid.shape}", flush=True)
-            grid_slab = gridder.reduce_grid(local_grid)  # Shape: (ngrid, slab_height, ngrid)
-            print(f"Process {process_id}: Grid reduction complete, grid_slab shape: {grid_slab.shape}", flush=True)
-            
-            # Calculate slab bounds for this process
-            slab_height = self.ngrid // n_processes
-            y_start = process_id * slab_height
-            y_end = (process_id + 1) * slab_height if process_id != n_processes - 1 else self.ngrid
-            
-            # Save density grid if requested - reconstruct full grid when needed
-            if save_density_grid:
-                full_grid = gridder.gather_full_grid(grid_slab)
-                if full_grid is not None:  # Only rank 0 gets the full grid
-                    # Extract this process's y-slab from the full grid for saving
-                    owned_slab = full_grid[:, y_start:y_end, :]  # Shape: (ngrid, slab_height, ngrid)
-                    self._save_density_grid_distributed(owned_slab, process_id, n_processes)
-            
-            # Calculate mean density using MPI reduction on slab data
-            print(f"Process {process_id}: About to calculate slab_mass", flush=True)
-            slab_mass = np.sum(grid_slab)
-            print(f"Process {process_id}: slab_mass = {slab_mass}, about to call MPI allreduce", flush=True)
-            total_mass = comm.allreduce(slab_mass, op=MPI.SUM)
-            print(f"Process {process_id}: MPI allreduce complete, total_mass = {total_mass}", flush=True)
-            mean_density = total_mass / self.ngrid**3
-            
-            print(f"Process {process_id}: {assignment.upper()} mean density: {mean_density:.6e}", flush=True)
-            
-            if mean_density <= 0:
-                raise ValueError(f"Process {process_id}: {assignment.upper()} mean density is zero or negative ({mean_density:.6e})")
-            
-            # Calculate density contrast directly on slab (no full grid needed)
-            delta_slab = (grid_slab - mean_density) / mean_density
-            
-            # Store diagnostics using slab data
-            self._store_density_diagnostics(grid_slab, delta_slab, len(redistributed_particles['x']))
-            
-            # SLAB-BASED FFT: Process slab directly (no slicing needed)
-            print(f"Process {process_id}: Starting {assignment.upper()} FFT with slab shape {delta_slab.shape}", flush=True)
-            delta_k = fft(delta_slab, direction='r2c')
-            print(f"Process {process_id}: {assignment.upper()} FFT complete, delta_k shape {delta_k.shape}", flush=True)
-            
-            # Calculate power spectrum
-            power_3d = np.abs(delta_k)**2 * (self.volume / self.ngrid**6)
-            
-            # Create k-grid for this process's k-space slab
-            # Calculate equivalent y-slab bounds for k-grid creation
-            physical_y_start = y_start * self.box_size / self.ngrid
-            physical_y_end = y_end * self.box_size / self.ngrid
-            k_grid_slab = create_slab_k_grid(self.ngrid, self.box_size, physical_y_start, physical_y_end)
-            
-            # Apply window correction
-            power_3d_corrected, k_grid_corrected = self._apply_window_correction(power_3d, k_grid_slab, assignment)
-            
-            # Bin and reduce power spectrum across processes
-            k_binned, power_binned, n_modes = bin_power_spectrum_distributed(
-                k_grid_corrected, power_3d_corrected, self.k_bins
-            )
-            
-            return self._finalize_power_spectrum(k_binned, power_binned, n_modes,
-                                               subtract_shot_noise, self._global_total_particles)
+        # Set up progress monitoring for long operations
+        progress_stop = threading.Event()
         
-        # Should not reach here given the gridder validation above
-        raise ValueError(
-            f"Assignment method '{assignment}' is not supported. "
-            f"Supported methods are 'ngp' and 'cic'."
-        )
+        def progress_monitor():
+            count = 0
+            while not progress_stop.is_set():
+                time.sleep(15)  # Report every 15 seconds
+                count += 1
+                elapsed = time.time() - start_time
+                print(f"[PowerSpectrum] Process {process_id}: {elapsed:.0f}s elapsed in distributed calculation (heartbeat {count})", flush=True)
+        
+        monitor_thread = threading.Thread(target=progress_monitor, daemon=True)
+        monitor_thread.start()
+        
+        try:
+            # Handle both NGP and CIC in distributed mode
+            if assignment == 'ngp' or assignment == 'cic':
+                if process_id == 0:
+                    print(f"Using {assignment.upper()} path with slab-based {assignment.upper()}Gridder")
+                
+                # Calculate global particle count before redistribution
+                local_particle_count = len(particles['x'])
+                self._global_total_particles = comm.allreduce(local_particle_count, op=MPI.SUM)
+                print(f"Process {process_id}: Global particle count ({assignment.upper()}): {self._global_total_particles}, local before redistribution: {local_particle_count}", flush=True)
+                
+                # CRITICAL: Redistribute particles to match Y-slab decomposition
+                # This ensures each process has the particles for its Y-slabs
+                print(f"Process {process_id}: Starting particle redistribution...", flush=True)
+                redistrib_start = time.time()
+                
+                redistributed_particles, y_start, y_end, y_start_ghost, y_end_ghost = redistribute_particles_mpi_simple(
+                    particles, self.ngrid, self.box_size, comm, assignment=assignment
+                )
+                
+                redistrib_elapsed = time.time() - redistrib_start
+                print(f"Process {process_id}: After redistribution ({redistrib_elapsed:.1f}s), have {len(redistributed_particles['x'])} particles for Y-slabs [{y_start}, {y_end})", flush=True)
+                
+                # Convert to physical coordinates if needed
+                positions = np.column_stack([redistributed_particles['x'], redistributed_particles['y'], redistributed_particles['z']])
+                masses = redistributed_particles.get('mass', None)
+                
+                # Use appropriate gridder to create local density grid
+                print(f"Process {process_id}: Starting {assignment.upper()} gridding...", flush=True)
+                gridding_start = time.time()
+                
+                local_grid = gridder.grid_particles(positions, masses)
+                
+                gridding_elapsed = time.time() - gridding_start
+                print(f"Process {process_id}: {assignment.upper()} gridding complete ({gridding_elapsed:.1f}s), local_grid shape: {local_grid.shape}", flush=True)
+                
+                # Validate particle conservation - now we can check against the redistributed total
+                print(f"Process {process_id}: About to validate particle conservation with {len(redistributed_particles['x'])} particles", flush=True)
+                
+                # Add timeout detection for validation phase to prevent hangs
+                validation_start = time.time()
+                try:
+                    gridder.validate_particle_conservation(len(redistributed_particles['x']))
+                    validation_elapsed = time.time() - validation_start
+                    print(f"Process {process_id}: Particle conservation validation complete ({validation_elapsed:.1f}s)", flush=True)
+                except Exception as e:
+                    validation_elapsed = time.time() - validation_start
+                    print(f"Process {process_id}: Validation failed after {validation_elapsed:.1f}s: {e}", flush=True)
+                    raise RuntimeError(f"Particle conservation validation failed on rank {process_id}: {e}") from e
+                
+                # NEW SLAB-BASED ARCHITECTURE: reduce_grid() returns slabs consistently
+                print(f"Process {process_id}: About to call reduce_grid(), local_grid shape: {local_grid.shape}", flush=True)
+                reduction_start = time.time()
+                
+                grid_slab = gridder.reduce_grid(local_grid)  # Shape: (ngrid, slab_height, ngrid)
+                
+                reduction_elapsed = time.time() - reduction_start
+                print(f"Process {process_id}: Grid reduction complete ({reduction_elapsed:.1f}s), grid_slab shape: {grid_slab.shape}", flush=True)
+                
+                # Calculate slab bounds for this process
+                slab_height = self.ngrid // n_processes
+                y_start = process_id * slab_height
+                y_end = (process_id + 1) * slab_height if process_id != n_processes - 1 else self.ngrid
+                
+                # Save density grid if requested - reconstruct full grid when needed
+                if save_density_grid:
+                    full_grid = gridder.gather_full_grid(grid_slab)
+                    if full_grid is not None:  # Only rank 0 gets the full grid
+                        # Extract this process's y-slab from the full grid for saving
+                        owned_slab = full_grid[:, y_start:y_end, :]  # Shape: (ngrid, slab_height, ngrid)
+                        self._save_density_grid_distributed(owned_slab, process_id, n_processes)
+                
+                # Calculate mean density using MPI reduction on slab data
+                print(f"Process {process_id}: About to calculate slab_mass", flush=True)
+                slab_mass = np.sum(grid_slab)
+                print(f"Process {process_id}: slab_mass = {slab_mass}, about to call MPI allreduce", flush=True)
+                
+                allreduce_start = time.time()
+                total_mass = comm.allreduce(slab_mass, op=MPI.SUM)
+                allreduce_elapsed = time.time() - allreduce_start
+                
+                print(f"Process {process_id}: MPI allreduce complete ({allreduce_elapsed:.1f}s), total_mass = {total_mass}", flush=True)
+                mean_density = total_mass / self.ngrid**3
+                
+                print(f"Process {process_id}: {assignment.upper()} mean density: {mean_density:.6e}", flush=True)
+                
+                if mean_density <= 0:
+                    raise ValueError(f"Process {process_id}: {assignment.upper()} mean density is zero or negative ({mean_density:.6e})")
+                
+                # Calculate density contrast directly on slab (no full grid needed)
+                delta_slab = (grid_slab - mean_density) / mean_density
+                
+                # Store diagnostics using slab data
+                self._store_density_diagnostics(grid_slab, delta_slab, len(redistributed_particles['x']))
+                
+                # SLAB-BASED FFT: Process slab directly (no slicing needed)
+                print(f"Process {process_id}: Starting {assignment.upper()} FFT with slab shape {delta_slab.shape}", flush=True)
+                
+                # CHECKPOINT: Pre-FFT synchronization with timeout detection
+                print(f"[PowerSpectrum] Process {process_id}: Synchronizing before FFT...", flush=True)
+                barrier_start = time.time()
+                
+                # Enhanced barrier with timeout to prevent hanging
+                barrier_success = threading.Event()
+                barrier_error = [None]
+                
+                def do_pre_fft_barrier():
+                    try:
+                        comm.Barrier()
+                        barrier_success.set()
+                    except Exception as e:
+                        barrier_error[0] = e
+                        barrier_success.set()
+                
+                # Start barrier in thread with timeout monitoring
+                barrier_thread = threading.Thread(target=do_pre_fft_barrier, daemon=True)
+                barrier_thread.start()
+                
+                # Wait for barrier with timeout and progress monitoring
+                timeout_seconds = 120  # 2 minute timeout for barrier
+                check_interval = 10
+                for i in range(0, timeout_seconds, check_interval):
+                    if barrier_success.wait(timeout=check_interval):
+                        break
+                    elapsed = time.time() - barrier_start
+                    print(f"[PowerSpectrum] Process {process_id}: Pre-FFT barrier still waiting after {elapsed:.1f}s", flush=True)
+                else:
+                    # Barrier timed out
+                    elapsed = time.time() - barrier_start
+                    print(f"[PowerSpectrum] Process {process_id}: Pre-FFT barrier timed out after {elapsed:.1f}s - HANGING DETECTED", flush=True)
+                    raise RuntimeError(f"Process {process_id}: Pre-FFT MPI barrier hung for {elapsed:.1f}s")
+                
+                if barrier_error[0]:
+                    raise barrier_error[0]
+                    
+                barrier_elapsed = time.time() - barrier_start
+                print(f"[PowerSpectrum] Process {process_id}: All processes ready for FFT computation (barrier: {barrier_elapsed:.1f}s)", flush=True)
+                
+                # Enhanced FFT monitoring with timeout detection
+                print(f"Process {process_id}: About to call fft() with direction='r2c'", flush=True)
+                fft_start = time.time()
+                
+                # Set up FFT timeout monitoring
+                fft_complete = threading.Event()
+                fft_result = [None]
+                fft_error = [None]
+                
+                def do_fft():
+                    try:
+                        result = fft(delta_slab, direction='r2c')
+                        fft_result[0] = result
+                        fft_complete.set()
+                    except Exception as e:
+                        fft_error[0] = e
+                        fft_complete.set()
+                
+                # Start FFT in separate thread with timeout monitoring
+                fft_thread = threading.Thread(target=do_fft, daemon=True)
+                fft_thread.start()
+                
+                # Wait for FFT to complete with timeout
+                if fft_complete.wait(timeout=180):  # 3 minute timeout for FFT
+                    fft_elapsed = time.time() - fft_start
+                    print(f"Process {process_id}: {assignment.upper()} FFT complete ({fft_elapsed:.1f}s)", flush=True)
+                    
+                    if fft_error[0]:
+                        raise fft_error[0]
+                        
+                    delta_k = fft_result[0]
+                    print(f"Process {process_id}: delta_k shape {delta_k.shape}", flush=True)
+                else:
+                    print(f"Process {process_id}: FFT timed out after 180s - HANGING DETECTED", flush=True)
+                    raise RuntimeError(f"Process {process_id}: FFT operation hung during distributed computation")
+                
+                # CHECKPOINT: Post-FFT synchronization with timeout detection
+                print(f"[PowerSpectrum] Process {process_id}: Synchronizing after FFT...", flush=True)
+                barrier_start = time.time()
+                
+                # Enhanced barrier with timeout to prevent hanging
+                barrier_success = threading.Event()
+                barrier_error = [None]
+                
+                def do_post_fft_barrier():
+                    try:
+                        comm.Barrier()
+                        barrier_success.set()
+                    except Exception as e:
+                        barrier_error[0] = e
+                        barrier_success.set()
+                
+                # Start barrier in thread with timeout monitoring
+                barrier_thread = threading.Thread(target=do_post_fft_barrier, daemon=True)
+                barrier_thread.start()
+                
+                # Wait for barrier with timeout and progress monitoring
+                timeout_seconds = 60  # 1 minute timeout for post-FFT barrier
+                check_interval = 10
+                for i in range(0, timeout_seconds, check_interval):
+                    if barrier_success.wait(timeout=check_interval):
+                        break
+                    elapsed = time.time() - barrier_start
+                    print(f"[PowerSpectrum] Process {process_id}: Post-FFT barrier still waiting after {elapsed:.1f}s", flush=True)
+                else:
+                    # Barrier timed out
+                    elapsed = time.time() - barrier_start
+                    print(f"[PowerSpectrum] Process {process_id}: Post-FFT barrier timed out after {elapsed:.1f}s - HANGING DETECTED", flush=True)
+                    raise RuntimeError(f"Process {process_id}: Post-FFT MPI barrier hung for {elapsed:.1f}s")
+                
+                if barrier_error[0]:
+                    raise barrier_error[0]
+                    
+                barrier_elapsed = time.time() - barrier_start
+                print(f"[PowerSpectrum] Process {process_id}: All processes completed FFT (barrier: {barrier_elapsed:.1f}s)", flush=True)
+                
+                # Calculate power spectrum
+                print(f"Process {process_id}: Computing power spectrum from FFT results...", flush=True)
+                power_3d = np.abs(delta_k)**2 * (self.volume / self.ngrid**6)
+                
+                # Create k-grid for this process's k-space slab
+                # Calculate equivalent y-slab bounds for k-grid creation
+                physical_y_start = y_start * self.box_size / self.ngrid
+                physical_y_end = y_end * self.box_size / self.ngrid
+                k_grid_slab = create_slab_k_grid(self.ngrid, self.box_size, physical_y_start, physical_y_end)
+                
+                # Apply window correction
+                print(f"Process {process_id}: Applying window correction...", flush=True)
+                power_3d_corrected, k_grid_corrected = self._apply_window_correction(power_3d, k_grid_slab, assignment)
+                
+                # Bin and reduce power spectrum across processes
+                print(f"Process {process_id}: Binning power spectrum...", flush=True)
+                k_binned, power_binned, n_modes = bin_power_spectrum_distributed(
+                    k_grid_corrected, power_3d_corrected, self.k_bins
+                )
+                
+                total_elapsed = time.time() - start_time
+                print(f"Process {process_id}: Distributed calculation complete in {total_elapsed:.1f}s", flush=True)
+                
+                return self._finalize_power_spectrum(k_binned, power_binned, n_modes,
+                                                   subtract_shot_noise, self._global_total_particles)
+            
+            # Should not reach here given the gridder validation above
+            raise ValueError(
+                f"Assignment method '{assignment}' is not supported. "
+                f"Supported methods are 'ngp' and 'cic'."
+            )
+            
+        finally:
+            # Stop progress monitoring
+            progress_stop.set()
     
     def _calculate_single_device(self, particles: Dict[str, np.ndarray],
                                gridder, subtract_shot_noise: bool,
@@ -469,8 +657,16 @@ class PowerSpectrumCalculator:
             local_grid = gridder.grid_particles(positions, masses)
             density_grid = gridder.reduce_grid(local_grid)  # This will just return local_grid for single process
             
-            # Validate particle conservation
-            gridder.validate_particle_conservation(len(particles['x']))
+            # Validate particle conservation with timeout detection
+            validation_start = time.time()
+            try:
+                gridder.validate_particle_conservation(len(particles['x']))
+                validation_elapsed = time.time() - validation_start
+                print(f"Single-device NGP validation complete ({validation_elapsed:.1f}s)", flush=True)
+            except Exception as e:
+                validation_elapsed = time.time() - validation_start
+                print(f"Single-device NGP validation failed after {validation_elapsed:.1f}s: {e}", flush=True)
+                raise RuntimeError(f"Particle conservation validation failed: {e}") from e
         elif assignment == 'cic':
             # CICGridder interface - similar to NGP but with ghost zone handling
             positions = np.column_stack([particles['x'], particles['y'], particles['z']])
@@ -480,8 +676,16 @@ class PowerSpectrumCalculator:
             local_grid = gridder.grid_particles(positions, masses)
             density_grid = gridder.reduce_grid(local_grid)  # Handles ghost exchange even for single process
             
-            # Validate particle conservation
-            gridder.validate_particle_conservation(len(particles['x']))
+            # Validate particle conservation with timeout detection
+            validation_start = time.time()
+            try:
+                gridder.validate_particle_conservation(len(particles['x']))
+                validation_elapsed = time.time() - validation_start
+                print(f"Single-device CIC validation complete ({validation_elapsed:.1f}s)", flush=True)
+            except Exception as e:
+                validation_elapsed = time.time() - validation_start
+                print(f"Single-device CIC validation failed after {validation_elapsed:.1f}s: {e}", flush=True)
+                raise RuntimeError(f"Particle conservation validation failed: {e}") from e
         else:
             # Only NGP and CIC assignments are supported
             raise ValueError(
@@ -627,9 +831,17 @@ class PowerSpectrumCalculator:
         
         print(f"Total particles processed: {total_particles:,}")
         
-        # Validate particle conservation for NGP
+        # Validate particle conservation for NGP with timeout detection
         if assignment == 'ngp':
-            gridder.validate_particle_conservation(total_particles)
+            validation_start = time.time()
+            try:
+                gridder.validate_particle_conservation(total_particles)
+                validation_elapsed = time.time() - validation_start
+                print(f"Chunk processing NGP validation complete ({validation_elapsed:.1f}s)", flush=True)
+            except Exception as e:
+                validation_elapsed = time.time() - validation_start
+                print(f"Chunk processing NGP validation failed after {validation_elapsed:.1f}s: {e}", flush=True)
+                raise RuntimeError(f"Particle conservation validation failed: {e}") from e
         
         # Calculate mean density and density contrast
         mean_density = np.float32(density_grid.mean())
@@ -745,17 +957,26 @@ class PowerSpectrumCalculator:
         if process_id == 0:
             print(f"Process {process_id} total particles: {total_particles:,}")
         
-        # Validate particle conservation for NGP
+        # Validate particle conservation for NGP with timeout detection
         if assignment == 'ngp':
-            # For distributed streaming, we need to calculate global particle count first
+            validation_start = time.time()
             try:
-                from mpi4py import MPI
-                comm = MPI.COMM_WORLD
-                global_particle_count = comm.allreduce(total_particles, op=MPI.SUM)
-                gridder.validate_particle_conservation(global_particle_count)
-            except ImportError:
-                print("WARNING: MPI not available for NGP particle conservation validation")
-                gridder.validate_particle_conservation(total_particles)
+                # For distributed streaming, we need to calculate global particle count first
+                try:
+                    from mpi4py import MPI
+                    comm = MPI.COMM_WORLD
+                    global_particle_count = comm.allreduce(total_particles, op=MPI.SUM)
+                    gridder.validate_particle_conservation(global_particle_count)
+                except ImportError:
+                    print("WARNING: MPI not available for NGP particle conservation validation")
+                    gridder.validate_particle_conservation(total_particles)
+                
+                validation_elapsed = time.time() - validation_start
+                print(f"Distributed streaming NGP validation complete ({validation_elapsed:.1f}s)", flush=True)
+            except Exception as e:
+                validation_elapsed = time.time() - validation_start
+                print(f"Distributed streaming NGP validation failed after {validation_elapsed:.1f}s: {e}", flush=True)
+                raise RuntimeError(f"Particle conservation validation failed: {e}") from e
         
         # Handle case where this process gets no particles
         if total_particles == 0:

@@ -48,18 +48,27 @@ class NGPGridder(BaseGridder):
             Local density grid for this process's y-slabs with shape
             (ngrid, slab_size, ngrid)
         """
+        print(f"[NGPGridder] Rank {self.rank}: Starting particle assignment", flush=True)
+        
         n_particles = len(positions)
         self.particles_processed = n_particles
+        print(f"[NGPGridder] Rank {self.rank}: Processing {n_particles:,} particles", flush=True)
         
         # Handle masses
         if masses is None:
             masses = np.ones(n_particles, dtype=np.float32)
+        
+        # Progress marker 1: Coordinate calculation
+        print(f"[NGPGridder] Rank {self.rank}: Computing grid coordinates", flush=True)
         
         # Direct particle binning using floor division
         # This is the CORRECT pattern that avoids coordinate fraud
         ix = np.floor(positions[:, 0] / self.cell_size).astype(np.int32) % self.ngrid
         iy = np.floor(positions[:, 1] / self.cell_size).astype(np.int32) % self.ngrid
         iz = np.floor(positions[:, 2] / self.cell_size).astype(np.int32) % self.ngrid
+        
+        # Progress marker 2: Masking
+        print(f"[NGPGridder] Rank {self.rank}: Applying Y-slab mask [{self.y_start}, {self.y_end})", flush=True)
         
         # Keep only particles in this process's y-slabs
         mask = (iy >= self.y_start) & (iy < self.y_end)
@@ -70,6 +79,10 @@ class NGPGridder(BaseGridder):
         
         # Track particle counts for validation
         self.local_particle_count = np.sum(mask)
+        print(f"[NGPGridder] Rank {self.rank}: Selected {self.local_particle_count:,} particles in Y-slab", flush=True)
+        
+        # Progress marker 3: Grid creation and binning
+        print(f"[NGPGridder] Rank {self.rank}: Creating local grid and binning particles", flush=True)
         
         # Create local density grid
         local_grid_shape = (self.ngrid, self.slab_size, self.ngrid)
@@ -78,6 +91,13 @@ class NGPGridder(BaseGridder):
         # Simple binning - add particle masses to grid cells
         # Using np.add.at for efficiency and to handle multiple particles per cell
         np.add.at(local_grid, (ix_local, iy_local, iz_local), masses_local)
+        
+        # Progress marker 4: Completion
+        print(f"[NGPGridder] Rank {self.rank}: Particle assignment complete. Grid shape: {local_grid.shape}, sum: {np.sum(local_grid):.2e}", flush=True)
+        
+        # Synchronization point
+        self.comm.Barrier()
+        print(f"[NGPGridder] Rank {self.rank}: Passed post-assignment MPI barrier", flush=True)
         
         return local_grid
     
@@ -136,7 +156,7 @@ class NGPGridder(BaseGridder):
     
     def validate_particle_conservation(self, expected_total: Optional[int] = None) -> bool:
         """
-        Validate particle conservation (NGP-compatible interface).
+        Validate particle conservation with streamlined NGP-specific logic.
         
         Args:
             expected_total: Expected total number of particles
@@ -144,16 +164,24 @@ class NGPGridder(BaseGridder):
         Returns:
             True if validation passes, False if mismatch detected
         """
+        import time
+        
+        start_time = time.time()
+        
         if expected_total is None:
-            # Just report current totals
-            counts = self.get_particle_counts()
+            # Quick local validation without full counts - reduces MPI overhead
             if self.rank == 0:
-                print(f"NGPGridder validation:")
-                print(f"  Total particles assigned: {counts['total_particles']:,}")
+                print(f"NGP validation: Local particle count - {self.local_particle_count:,}", flush=True)
+            validation_elapsed = time.time() - start_time
+            print(f"Process {self.rank}: NGP quick validation complete ({validation_elapsed:.2f}s)", flush=True)
             return True
         else:
-            # Use base class validation with tolerance
-            return super().validate_particle_conservation(expected_total)
+            # Use optimized base class validation 
+            print(f"Process {self.rank}: Starting NGP conservation validation for {expected_total:,} particles", flush=True)
+            result = super().validate_particle_conservation(expected_total)
+            validation_elapsed = time.time() - start_time
+            print(f"Process {self.rank}: NGP conservation validation complete ({validation_elapsed:.2f}s)", flush=True)
+            return result
     
     def get_density_diagnostics(self, density_grid: np.ndarray) -> Dict[str, float]:
         """
